@@ -378,8 +378,10 @@ function migrate() {
   if (s.geminiModel && DEPRECATED_GEMINI_MODELS.includes(s.geminiModel)) { s.geminiModel = DEFAULT_GEMINI_MODEL; save(); }
 }
 function save() {
+  DB.updatedAt = Date.now();
   try { localStorage.setItem(LS_KEY, JSON.stringify(DB)); }
   catch (e) { toast("保存に失敗しました（容量不足の可能性）"); }
+  if (typeof pushToCloud === "function") pushToCloud();
 }
 function monthOf(ym, create) {
   if (!DB.months[ym] && create) DB.months[ym] = { income: { ken: 0, misuzu: 0 }, expenses: [], assets: null };
@@ -941,6 +943,102 @@ async function callGeminiOCR(images) {
   const text = data && data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts && data.candidates[0].content.parts[0] && data.candidates[0].content.parts[0].text;
   if (!text) throw new Error("読み取り結果が空でした");
   try { return JSON.parse(text); } catch (e) { throw new Error("読み取り結果を解析できませんでした"); }
+}
+
+/* ============================================================ 夫婦間リアルタイム同期（Firebase） ============================================================ */
+const FB_CONFIG_KEY = "kakeibo-firebase-config";
+const FB_SDK_VER = "10.14.1";
+let fbMods = null, fbApp = null, fbAuth = null, fbDb = null, fbUser = null, fbUnsub = null;
+let fbSyncing = false, fbPushTimer = null, fbInitPromise = null;
+
+function loadFirebaseConfig() {
+  try { const raw = localStorage.getItem(FB_CONFIG_KEY); return raw ? JSON.parse(raw) : null; } catch (e) { return null; }
+}
+function saveFirebaseConfig(cfg) { localStorage.setItem(FB_CONFIG_KEY, JSON.stringify(cfg)); }
+function parseFirebaseConfigText(text) {
+  const obj = {};
+  const re = /["']?(\w+)["']?\s*:\s*["']([^"']*)["']/g;
+  let m;
+  while ((m = re.exec(text))) obj[m[1]] = m[2];
+  return (obj.apiKey && obj.projectId) ? obj : null;
+}
+async function loadFirebaseSDK() {
+  if (fbMods) return fbMods;
+  const base = `https://www.gstatic.com/firebasejs/${FB_SDK_VER}/`;
+  const [appMod, authMod, fsMod] = await Promise.all([
+    import(/* @vite-ignore */ base + "firebase-app.js"),
+    import(/* @vite-ignore */ base + "firebase-auth.js"),
+    import(/* @vite-ignore */ base + "firebase-firestore.js")
+  ]);
+  fbMods = { appMod, authMod, fsMod };
+  return fbMods;
+}
+function fbInit() {
+  if (fbInitPromise) return fbInitPromise;
+  fbInitPromise = (async () => {
+    const cfg = loadFirebaseConfig();
+    if (!cfg) return false;
+    try {
+      const { appMod, authMod, fsMod } = await loadFirebaseSDK();
+      fbApp = appMod.initializeApp(cfg);
+      fbAuth = authMod.getAuth(fbApp);
+      fbDb = fsMod.getFirestore(fbApp);
+      authMod.onAuthStateChanged(fbAuth, user => {
+        fbUser = user;
+        if (user) startFbSync(); else stopFbSync();
+        if (state.view === "settings") renderSettings();
+      });
+      return true;
+    } catch (e) {
+      console.error("Firebase init failed:", e);
+      fbInitPromise = null;
+      return false;
+    }
+  })();
+  return fbInitPromise;
+}
+async function fbSignIn() {
+  const ok = await fbInit();
+  if (!ok) { toast("Firebase設定を保存してから同期を開始してください"); return; }
+  try {
+    const provider = new fbMods.authMod.GoogleAuthProvider();
+    await fbMods.authMod.signInWithPopup(fbAuth, provider);
+  } catch (e) {
+    toast("ログインに失敗しました：" + ((e && e.message) || ""));
+  }
+}
+function fbSignOut() { if (fbAuth && fbMods) fbMods.authMod.signOut(fbAuth); stopFbSync(); }
+function startFbSync() {
+  if (fbSyncing || !fbDb || !fbUser) return;
+  fbSyncing = true;
+  const { fsMod } = fbMods;
+  const ref = fsMod.doc(fbDb, "families", "main");
+  fsMod.getDoc(ref).then(snap => {
+    const remote = snap.exists() ? snap.data() : null;
+    const localUpdated = DB.updatedAt || 0;
+    const remoteUpdated = (remote && remote.updatedAt) || 0;
+    if (remote && remoteUpdated >= localUpdated) applyRemoteDB(remote);
+    else pushToCloud(true);
+    fbUnsub = fsMod.onSnapshot(ref, snap2 => {
+      if (!snap2.exists()) return;
+      const data = snap2.data();
+      if ((data.updatedAt || 0) > (DB.updatedAt || 0)) applyRemoteDB(data);
+    });
+  }).catch(e => { console.error("Firestore sync start failed:", e); toast("同期の開始に失敗しました（Firestoreの設定・ルールを確認してください）"); fbSyncing = false; });
+}
+function stopFbSync() { if (fbUnsub) { fbUnsub(); fbUnsub = null; } fbSyncing = false; }
+function applyRemoteDB(data) {
+  const { updatedAt, ...rest } = data;
+  DB = rest;
+  DB.updatedAt = updatedAt;
+  try { localStorage.setItem(LS_KEY, JSON.stringify(DB)); } catch (e) {}
+  render();
+}
+function pushToCloud(immediate) {
+  if (!fbUser || !fbDb || !fbMods) return;
+  clearTimeout(fbPushTimer);
+  const doPush = () => { fbMods.fsMod.setDoc(fbMods.fsMod.doc(fbDb, "families", "main"), DB).catch(e => console.error("sync push failed:", e)); };
+  if (immediate) doPush(); else fbPushTimer = setTimeout(doPush, 800);
 }
 
 /* ============================================================ IMPORT ============================================================ */
@@ -1533,7 +1631,25 @@ function renderSettings() {
   const s = DB.settings;
   const inUse = new Set();
   Object.values(DB.months).forEach(m => m.expenses.forEach(e => inUse.add(e.cat)));
+  const fbCfg = loadFirebaseConfig();
+  const fbConfigRaw = fbCfg ? JSON.stringify(fbCfg, null, 1) : "";
   $("#view").innerHTML = `
+  <div class="card">
+    <h2>☁️ 夫婦間リアルタイム同期</h2>
+    <div class="note" style="margin-bottom:10px">Firebase（Googleの無料サービス）を使って、この端末での変更を自動的にもう一方の端末にも反映します。設定方法はセットアップガイドをご覧ください。
+    ${inArtifact ? '<br><b style="color:var(--minus)">⚠️ このページ（Claude内プレビュー）では同期は動作しません。GitHub Pagesで公開したURLから開いてください。</b>' : ""}</div>
+    <details ${fbCfg ? "" : "open"}>
+      <summary style="cursor:pointer;font-size:12px;font-weight:700;color:var(--ink2)">Firebase設定${fbCfg ? "（登録済み・変更する場合はここを開く）" : ""}</summary>
+      <div class="field" style="margin-top:8px"><label>firebaseConfigを丸ごと貼り付け</label>
+        <textarea id="fbConfigText" placeholder='const firebaseConfig = {&#10;  apiKey: "...",&#10;  authDomain: "...",&#10;  projectId: "...",&#10;  ...&#10;};' style="min-height:110px;font-size:12px">${esc(fbConfigRaw)}</textarea></div>
+      <div style="margin-top:8px"><button class="btn mini ghost" id="fbConfigSave">設定を保存</button></div>
+    </details>
+    <div class="frow" style="margin-top:12px">
+      ${!fbCfg ? '<span class="note">↑ まずFirebase設定を保存してください</span>'
+        : fbUser ? `<span class="badge">🟢 ${esc(fbUser.email)} と同期中</span><button class="btn mini dangr" id="fbSignOutBtn">同期を解除</button>`
+        : `<button class="btn" id="fbSignInBtn">Googleでログインして同期を開始</button>`}
+    </div>
+  </div>
   <div class="card">
     <h2>🔌 API連携（写真OCR・Gmail自動取得）</h2>
     <div class="note" style="margin-bottom:10px">給与明細の写真読み取りには<b>Google AI StudioのGemini APIキー</b>、Gmail自動取得には<b>Google CloudのOAuthクライアントID</b>が必要です。取得方法はセットアップガイドをご覧ください。
@@ -1616,6 +1732,20 @@ function renderSettings() {
   </div>
   </div>`;
 
+  $("#fbConfigSave").onclick = async () => {
+    const text = $("#fbConfigText").value.trim();
+    if (!text) { toast("設定を貼り付けてください"); return; }
+    let cfg = parseFirebaseConfigText(text);
+    if (!cfg) { try { cfg = JSON.parse(text); } catch (e) { cfg = null; } }
+    if (!cfg || !cfg.apiKey || !cfg.projectId) { toast("設定の形式を確認してください（apiKey・projectIdが必要です）"); return; }
+    saveFirebaseConfig(cfg);
+    toast("Firebase設定を保存しました");
+    await fbInit();
+    renderSettings();
+  };
+  if ($("#fbSignInBtn")) $("#fbSignInBtn").onclick = fbSignIn;
+  if ($("#fbSignOutBtn")) $("#fbSignOutBtn").onclick = () => { fbSignOut(); renderSettings(); };
+
   $("#apiSave").onclick = () => {
     s.geminiKey = $("#setGeminiKey").value.trim();
     s.googleClientId = $("#setClientId").value.trim();
@@ -1674,4 +1804,5 @@ function render() {
 }
 load();
 render();
+if (loadFirebaseConfig() && !inArtifact) fbInit();
 </script>
