@@ -1247,22 +1247,27 @@ function pickStore(block) {
   return null;
 }
 function parseRakutenMail(text) {
-  const blocks = text.split(/(?=ご利用日時|ご利用日[^時]|カード利用のお知らせ|楽天ペイアプリご利用内容確認)/).filter(b => b.trim());
-  /* メール種別はテキスト全体から判定（分割後のブロックにヘッダーが残らないため） */
-  const mailFallback = /カード利用のお知らせ|楽天カード/.test(text) ? "楽天カード利用" : "楽天ペイ利用";
+  /* 楽天ペイのメールは「▼ご利用店舗 → ▼ご利用日時 → ▼決済総額」の順のため、
+     取引ブロックより先にメールの先頭マーカーで区切り、店名はメール全体からも探す */
+  const units = text.split(/(?=楽天ペイお支払い完了のお知らせ|いつも楽天ペイアプリをご利用|ご利用内容確認メール|カード利用のお知らせ)/).filter(u => u.trim());
   const rows = [];
-  for (const b of blocks) {
-    /* 決済通知らしさの確認：広告メール等を明細と誤認しない */
-    if (!/ご利用日時|ご利用日|カード利用|ご利用内容/.test(b)) continue;
-    const d = parseDateStr(b);
-    if (!d) continue;
-    /* 金額は「決済総額」等のラベル付きのみ採用（広告内の商品価格を拾わないため、裸の¥金額は不採用） */
-    const am = b.match(/(?:決済総額|お支払い?金額|ご利用金額|合計金額|利用金額)\s*[:：]?\s*[¥￥]?\s*([\d,]+)\s*円?/);
-    if (!am) continue;
-    const amt = Number(am[1].replace(/,/g, ""));
-    if (!amt) continue;
-    const store = pickStore(b);
-    rows.push({ ym: d.ym, day: d.day, label: store || mailFallback, amount: amt });
+  for (const unit of (units.length ? units : [text])) {
+    const mailFallback = /カード利用のお知らせ/.test(unit) ? "楽天カード利用" : "楽天ペイ利用";
+    const unitStore = pickStore(unit);
+    const blocks = unit.split(/(?=ご利用日時|ご利用日[^時])/).filter(b => b.trim());
+    for (const b of blocks) {
+      /* 決済通知らしさの確認：広告メール等を明細と誤認しない */
+      if (!/ご利用日時|ご利用日|カード利用|ご利用内容/.test(b)) continue;
+      const d = parseDateStr(b);
+      if (!d) continue;
+      /* 金額は「決済総額」等のラベル付きのみ採用（広告内の商品価格を拾わないため、裸の¥金額は不採用） */
+      const am = b.match(/(?:決済総額|お支払い?金額|ご利用金額|合計金額|利用金額)\s*[:：]?\s*[¥￥]?\s*([\d,]+)\s*円?/);
+      if (!am) continue;
+      const amt = Number(am[1].replace(/,/g, ""));
+      if (!amt) continue;
+      const store = pickStore(b) || unitStore;
+      rows.push({ ym: d.ym, day: d.day, label: store || mailFallback, amount: amt });
+    }
   }
   return rows;
 }
