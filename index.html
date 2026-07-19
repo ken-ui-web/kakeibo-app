@@ -903,11 +903,16 @@ function fileToBase64(file) {
     r.readAsDataURL(file);
   });
 }
-async function callGeminiOCR(base64, mimeType) {
+async function callGeminiOCR(images) {
+  /* images: [{base64, mimeType}, ...] — 1枚でも複数枚（裏表など）でもOK */
   const key = (DB.settings.geminiKey || "").trim();
   if (!key) { const e = new Error("Gemini APIキーが未設定です"); e.noKey = true; throw e; }
   const model = DB.settings.geminiModel || DEFAULT_GEMINI_MODEL;
-  const prompt = `これは日本の給与明細の写真です。記載されている項目をすべて読み取り、次のJSON形式だけで出力してください。前置きや説明文、コードブロックの記号は不要です。
+  const prompt = images.length > 1
+    ? `これらは同じ人の日本の給与明細に関する複数枚の写真です（裏表や、明細書＋振込通知票など、関連する複数の書類の場合があります）。すべての写真の内容を1つにまとめ、記載されている項目をすべて読み取って、次のJSON形式だけで出力してください。前置きや説明文、コードブロックの記号は不要です。
+{"items":[{"label":"項目名","amount":数値}],"gross":支給額計または総支給額(数値かnull),"deduction":控除合計(すべての控除・天引き項目の合計。複数の書類にまたがる場合は合算する。数値かnull),"net":最終的に実際に口座へ振り込まれた金額(数値かnull)}
+金額はカンマや円記号を除いた数値にしてください。同じ項目が複数の写真に重複して写っていても1回だけ数えてください。読み取れない項目は無理に含めないでください。"net"は、複数の書類にまたがって控除がある場合、最終的な実際の振込額（本人口座振込額など、一番最後に確定する金額）を優先してください。`
+    : `これは日本の給与明細の写真です。記載されている項目をすべて読み取り、次のJSON形式だけで出力してください。前置きや説明文、コードブロックの記号は不要です。
 {"items":[{"label":"項目名","amount":数値}],"gross":支給額計または総支給額(数値かnull),"deduction":控除合計(数値かnull),"net":差引支給額または振込額(数値かnull)}
 金額はカンマや円記号を除いた数値にしてください。読み取れない項目は無理に含めないでください。`;
   let res;
@@ -916,7 +921,7 @@ async function callGeminiOCR(base64, mimeType) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }, { inline_data: { mime_type: mimeType, data: base64 } }] }],
+        contents: [{ parts: [{ text: prompt }, ...images.map(img => ({ inline_data: { mime_type: img.mimeType, data: img.base64 } }))] }],
         generationConfig: { responseMimeType: "application/json", temperature: 0 }
       })
     });
@@ -986,9 +991,9 @@ function renderImport() {
       <div class="field"><label>だれの給与？</label><select id="psWho"><option value="ken">${esc(DB.settings.husbandName)}</option><option value="misuzu">${esc(DB.settings.wifeName)}</option></select></div>
       <div class="field"><label>対象の月</label><input type="month" id="psMonth" value="${state.cur}"></div>
     </div>
-    <div class="hint">📷 <b>写真をアップロードすると、AIが自動で内容を読み取ります</b>（設定画面でGemini APIキーの登録が必要です）。</div>
+    <div class="hint">📷 <b>写真をアップロードすると、AIが自動で内容を読み取ります</b>（設定画面でGemini APIキーの登録が必要です）。<b>裏表など複数枚ある場合は、まとめて選択</b>してください（内容を1つにまとめて読み取ります）。</div>
     <div class="frow" style="margin-bottom:14px">
-      <label class="btn" style="display:inline-flex;align-items:center;gap:6px">📷 給与明細の写真を選ぶ<input type="file" id="psPhoto" accept="image/*" capture="environment" style="display:none"></label>
+      <label class="btn" style="display:inline-flex;align-items:center;gap:6px">📷 給与明細の写真を選ぶ（複数可）<input type="file" id="psPhoto" accept="image/*" capture="environment" multiple style="display:none"></label>
       <span id="psPhotoStatus" class="note"></span>
     </div>
     <div style="border-top:1px solid var(--line);margin:14px 0"></div>
@@ -1052,12 +1057,12 @@ function renderImport() {
   };
 
   if ($("#psPhoto")) $("#psPhoto").onchange = async e => {
-    const f = e.target.files[0]; if (!f) return;
+    const files = Array.from(e.target.files || []); if (!files.length) return;
     const statusEl = $("#psPhotoStatus");
-    statusEl.textContent = "🔄 AIが読み取り中...";
+    statusEl.textContent = files.length > 1 ? `🔄 ${files.length}枚をまとめてAIが読み取り中...` : "🔄 AIが読み取り中...";
     try {
-      const b64 = await fileToBase64(f);
-      const result = await callGeminiOCR(b64, f.type || "image/jpeg");
+      const images = await Promise.all(files.map(async f => ({ base64: await fileToBase64(f), mimeType: f.type || "image/jpeg" })));
+      const result = await callGeminiOCR(images);
       state.psParsed = {
         items: result.items || [],
         net: result.net != null ? result.net : (result.gross != null && result.deduction != null ? result.gross - result.deduction : result.gross),
