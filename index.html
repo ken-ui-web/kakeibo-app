@@ -143,8 +143,16 @@ textarea{width:100%;min-height:130px;resize:vertical;font-size:13px;line-height:
 /* income rows */
 .inc-row{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center;padding:10px 0;border-bottom:1px solid var(--hairline)}
 .inc-row:last-child{border-bottom:0}
-.inc-name{font-weight:700}
+.inc-name{font-weight:700;background:none;border:0;padding:0;text-align:left;font-size:15px;color:var(--ink);cursor:pointer;font-family:inherit}
 .inc-name small{display:block;font-weight:600;font-size:11px;color:var(--ink3)}
+.inc-name .caret{color:var(--accent);font-size:12px}
+.inc-detail{background:var(--surface2);border-radius:10px;padding:10px 12px;margin:2px 0 10px}
+.idrow{display:grid;grid-template-columns:1fr 110px auto;gap:6px;margin-bottom:6px}
+.idrow input{padding:6px 9px;font-size:13px}
+.idrow .ida{text-align:right}
+.editAmt{border:0;background:none;font-weight:600;font-size:14px;color:var(--ink);cursor:pointer;padding:2px 4px;border-radius:6px;font-family:inherit}
+.editAmt:hover{background:var(--surface2)}
+.pin{font-size:11px}
 .yen-input{position:relative}
 .yen-input input{width:150px;text-align:right;font-weight:700;font-size:16px;padding-right:26px}
 .yen-input::after{content:"円";position:absolute;right:9px;top:50%;transform:translateY(-50%);font-size:12px;color:var(--ink3)}
@@ -278,6 +286,8 @@ const $$ = (s, el) => Array.from((el || document).querySelectorAll(s));
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const yen = n => "¥" + Math.round(Number(n) || 0).toLocaleString("ja-JP");
 const yenS = n => (n < 0 ? "−¥" + Math.abs(Math.round(n)).toLocaleString("ja-JP") : yen(n));
+const numVal = v => { const n = Number(String(v ?? "").replace(/[,，\s円¥￥]/g, "")); return isNaN(n) ? 0 : n; };
+const fmtIn = n => { const x = Number(n); return !x ? "" : x.toLocaleString("ja-JP"); };
 const uid = () => Math.random().toString(36).slice(2, 10);
 const todayYM = () => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0"); };
 const ymLabel = ym => { const [y, m] = ym.split("-"); return y + "年" + Number(m) + "月"; };
@@ -379,8 +389,23 @@ function totals(ym) {
 }
 function assetTotal(list) { return (list || []).reduce((s, a) => s + (a.amount || 0), 0); }
 
+/* ---------- recurring fixed expenses (毎月の固定費) ---------- */
+function recTemplates() { return DB.settings.recurring = DB.settings.recurring || []; }
+function ensureRecurring(ym, m) {
+  let changed = false;
+  m.skipRec = m.skipRec || [];
+  recTemplates().forEach(t => {
+    if (t.since && cmpYM(ym, t.since) < 0) return;
+    if (m.skipRec.includes(t.id)) return;
+    if (m.expenses.some(e => e.recurringId === t.id)) return;
+    m.expenses.push({ id: uid(), day: t.day || 27, label: t.label, amount: t.amount, cat: t.cat, recurringId: t.id });
+    changed = true;
+  });
+  if (changed) save();
+}
+
 /* ---------- app state ---------- */
-const state = { view: "home", cur: todayYM(), impTab: "csv", impRows: [], impNotice: "", range: 12, rangeStart: "", psParsed: null };
+const state = { view: "home", cur: todayYM(), impTab: "csv", impRows: [], impNotice: "", range: 12, rangeStart: "", psParsed: null, incOpen: {}, reconcile: null };
 
 /* ---------- toast ---------- */
 let toastTimer;
@@ -427,6 +452,7 @@ function renderHome() {
     if (prev) { m.assets = prev.assets.map(a => ({ ...a, id: uid() })); carried = true; save(); }
     else m.assets = [];
   }
+  ensureRecurring(ym, m);
   const { inc, exp, bal } = totals(ym);
   const aTotal = assetTotal(m.assets);
   const cash = assetTotal(m.assets.filter(a => a.type !== "invest"));
@@ -481,18 +507,18 @@ function renderHome() {
     <div class="card">
       <h2>💼 収入</h2>
       <div class="inc-row">
-        <div class="inc-name">${hName}<small>給与明細から読み取り可</small></div>
-        <div class="yen-input"><input type="number" inputmode="numeric" id="incKen" value="${m.income.ken || ""}" placeholder="0"></div>
+        <button type="button" class="inc-name incToggle" data-who="ken">${hName} <span class="caret">${state.incOpen.ken ? "▾" : "▸"}</span><small>${(m.income.kenItems || []).length ? "明細 " + m.income.kenItems.length + "項目 — タップで開く" : "タップで明細内訳を入力"}</small></button>
+        <div class="yen-input"><input type="text" inputmode="numeric" id="incKen" value="${fmtIn(m.income.ken)}" placeholder="0"></div>
       </div>
-      ${incDetail(m, "ken")}
+      ${incDetailEditor(m, "ken")}
       <div class="inc-row">
-        <div class="inc-name">${wName}<small>育休・復帰後もこちらに</small></div>
-        <div class="yen-input"><input type="number" inputmode="numeric" id="incMis" value="${m.income.misuzu || ""}" placeholder="0"></div>
+        <button type="button" class="inc-name incToggle" data-who="misuzu">${wName} <span class="caret">${state.incOpen.misuzu ? "▾" : "▸"}</span><small>${(m.income.misuzuItems || []).length ? "明細 " + m.income.misuzuItems.length + "項目 — タップで開く" : "タップで明細内訳を入力"}</small></button>
+        <div class="yen-input"><input type="text" inputmode="numeric" id="incMis" value="${fmtIn(m.income.misuzu)}" placeholder="0"></div>
       </div>
-      ${incDetail(m, "misuzu")}
+      ${incDetailEditor(m, "misuzu")}
       <div class="inc-row">
-        <div class="inc-name">その他<small>児童手当・臨時収入など</small></div>
-        <div class="yen-input"><input type="number" inputmode="numeric" id="incOther" value="${m.income.other || ""}" placeholder="0"></div>
+        <div class="inc-name" style="cursor:default">その他<small>児童手当・臨時収入など</small></div>
+        <div class="yen-input"><input type="text" inputmode="numeric" id="incOther" value="${fmtIn(m.income.other)}" placeholder="0"></div>
       </div>
       <div style="margin-top:10px"><button class="btn mini ghost" id="goPayslip">📷 給与明細を読み取る</button></div>
     </div>
@@ -504,7 +530,7 @@ function renderHome() {
         <div class="as-row" data-id="${a.id}">
           <input class="nm" type="text" value="${esc(a.name)}" placeholder="口座名">
           <button type="button" class="typ ${a.type === "invest" ? "inv" : ""}">${a.type === "invest" ? "投資" : "貯金"}</button>
-          <div class="yen-input"><input class="am" type="number" inputmode="numeric" value="${a.amount || ""}" placeholder="0"></div>
+          <div class="yen-input"><input class="am num" type="text" inputmode="numeric" value="${fmtIn(a.amount)}" placeholder="0"></div>
           <button type="button" class="iconb del" aria-label="削除">✕</button>
         </div>`).join("")}
       </div>
@@ -518,8 +544,9 @@ function renderHome() {
     <form id="expForm" class="exp-add">
       <div class="field"><label>日</label><input type="number" id="eDay" min="1" max="31" value="${cmpYM(ym, todayYM()) === 0 ? new Date().getDate() : 1}"></div>
       <div class="field"><label>内容</label><input type="text" id="eLabel" placeholder="例：スーパーで買い物"></div>
-      <div class="field full"><label>金額（円）</label><input type="number" inputmode="numeric" id="eAmt" placeholder="0"></div>
+      <div class="field full"><label>金額（円）</label><input type="text" inputmode="numeric" id="eAmt" class="num" placeholder="例：1,280"></div>
       <div class="catchips" id="eCats">${catChips}</div>
+      <label class="full" style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;color:var(--ink2);cursor:pointer"><input type="checkbox" id="eFixed">📌 毎月の固定費として登録（来月以降も自動で追加されます）</label>
       <div class="full"><button class="btn" type="submit" style="width:100%">支出を追加</button></div>
     </form>
     ${donutHtml(catGroups, exp)}
@@ -529,27 +556,66 @@ function renderHome() {
           <div class="grp-h"><span class="dot" style="background:${g2.cat.color}"></span>${esc(g2.cat.name)}<span class="amt num">${yen(g2.sum)}</span></div>
           ${g2.list.sort((a, b) => a.day - b.day).map(e => `
             <div class="exp-item" data-id="${e.id}">
-              <span class="d num">${e.day}日</span><span class="l">${esc(e.label)}</span>
-              <span class="a num">${yen(e.amount)}</span>
+              <span class="d num">${e.day}日</span><span class="l">${e.recurringId ? '<span class="pin" title="毎月の固定費">📌</span> ' : ""}${esc(e.label)}</span>
+              <button type="button" class="editAmt num" title="タップで金額を変更">${yen(e.amount)}</button>
               <button type="button" class="iconb delExp" aria-label="削除">✕</button>
             </div>`).join("")}
         </div>`).join("") : '<div class="empty">まだ支出がありません。上のフォームか「取込」タブから追加できます。</div>'}
     </div>
+    ${recTemplates().length ? `
+    <details style="margin-top:14px">
+      <summary style="cursor:pointer;font-size:12.5px;font-weight:700;color:var(--ink2)">📌 固定費の管理（${recTemplates().length}件）</summary>
+      <div id="recList" style="margin-top:6px">
+        ${recTemplates().map(t => `
+        <div class="set-row" data-id="${t.id}">
+          <span class="cat-dot" style="background:${catById(t.cat).color}"></span>
+          <span style="flex:1;font-size:13px">${esc(t.label)}<span class="note">（毎月${t.day || 27}日・${esc(catById(t.cat).name)}）</span></span>
+          <button type="button" class="editAmt num recAmt" title="来月以降の金額を変更">${yen(t.amount)}</button>
+          <button type="button" class="iconb recDel" aria-label="削除">✕</button>
+        </div>`).join("")}
+      </div>
+      <div class="note" style="margin-top:6px">金額の変更は<b>来月以降の自動追加分</b>に反映されます（表示中の月の分は上の一覧でタップして変更）。✕で削除すると来月以降は自動追加されません。</div>
+    </details>` : ""}
   </div>
   </div>`;
 
   /* wire income */
   const wireInc = (id, key) => {
-    $(id).onchange = e => { m.income[key] = Number(e.target.value) || 0; save(); renderHome(); };
+    $(id).onchange = e => { m.income[key] = numVal(e.target.value); save(); renderHome(); };
   };
   wireInc("#incKen", "ken"); wireInc("#incMis", "misuzu"); wireInc("#incOther", "other");
   $("#goPayslip").onclick = () => { state.view = "import"; state.impTab = "payslip"; render(); window.scrollTo(0, 0); };
+
+  /* wire income detail editors */
+  $$(".incToggle").forEach(b => b.onclick = () => { const w = b.dataset.who; state.incOpen[w] = !state.incOpen[w]; renderHome(); });
+  $$(".inc-detail").forEach(box => {
+    const who = box.dataset.who;
+    const items = m.income[who + "Items"] = m.income[who + "Items"] || [];
+    $$(".idrow", box).forEach(row => {
+      const it = items[Number(row.dataset.i)];
+      $(".idl", row).onchange = e => { it.label = e.target.value; save(); };
+      $(".ida", row).onchange = e => { it.amount = numVal(e.target.value); save(); renderHome(); };
+      $(".idDel", row).onclick = () => { items.splice(Number(row.dataset.i), 1); save(); renderHome(); };
+    });
+    $(".idAdd", box).onclick = () => { items.push({ label: "", amount: 0 }); save(); renderHome(); };
+    $(".idCopy", box).onclick = () => {
+      let p = ym, found = null;
+      for (let i = 0; i < 36 && !found; i++) {
+        p = addMonths(p, -1);
+        const pm = DB.months[p];
+        if (pm && pm.income[who + "Items"] && pm.income[who + "Items"].length) found = pm.income[who + "Items"];
+      }
+      if (!found) { toast("コピーできる過去の明細がありません"); return; }
+      m.income[who + "Items"] = found.map(x => ({ ...x }));
+      save(); renderHome(); toast("前回の内訳をコピーしました");
+    };
+  });
 
   /* wire assets */
   $$("#assetRows .as-row").forEach(row => {
     const a = m.assets.find(x => x.id === row.dataset.id);
     row.querySelector(".nm").onchange = e => { a.name = e.target.value; save(); };
-    row.querySelector(".am").onchange = e => { a.amount = Number(e.target.value) || 0; save(); renderHome(); };
+    row.querySelector(".am").onchange = e => { a.amount = numVal(e.target.value); save(); renderHome(); };
     row.querySelector(".typ").onclick = () => { a.type = a.type === "invest" ? "cash" : "invest"; save(); renderHome(); };
     row.querySelector(".del").onclick = () => { if (confirm(`「${a.name}」を削除しますか？`)) { m.assets = m.assets.filter(x => x.id !== a.id); save(); renderHome(); } };
   });
@@ -563,25 +629,77 @@ function renderHome() {
   });
   $("#expForm").onsubmit = e => {
     e.preventDefault();
-    const amt = Number($("#eAmt").value);
+    const amt = numVal($("#eAmt").value);
     const label = $("#eLabel").value.trim();
     if (!amt) { toast("金額を入力してください"); return; }
     const day = Math.min(31, Math.max(1, Number($("#eDay").value) || 1));
     const cat = selCat || guessCat(label) || "other";
-    m.expenses.push({ id: uid(), day, label: label || catById(cat).name, amount: amt, cat });
-    save(); toast("支出を追加しました"); renderHome();
+    const entry = { id: uid(), day, label: label || catById(cat).name, amount: amt, cat };
+    if ($("#eFixed").checked) {
+      const t = { id: uid(), label: entry.label, amount: amt, cat, day, since: ym };
+      recTemplates().push(t);
+      entry.recurringId = t.id;
+      toast("固定費として登録しました（来月以降も自動で追加されます）");
+    } else {
+      toast("支出を追加しました");
+    }
+    m.expenses.push(entry);
+    save(); renderHome();
   };
+  $$("#expList .editAmt").forEach(b => b.onclick = () => {
+    const id = b.closest(".exp-item").dataset.id;
+    const e = m.expenses.find(x => x.id === id);
+    const v = prompt(`「${e.label}」の金額（今月分）`, e.amount);
+    if (v == null) return;
+    const n = numVal(v);
+    if (!n) { toast("金額を確認してください"); return; }
+    e.amount = n; save(); renderHome();
+  });
   $$("#expList .delExp").forEach(b => b.onclick = () => {
     const id = b.closest(".exp-item").dataset.id;
     const e = m.expenses.find(x => x.id === id);
-    if (confirm(`「${e.label}」${yen(e.amount)} を削除しますか？`)) { m.expenses = m.expenses.filter(x => x.id !== id); save(); renderHome(); }
+    if (e.recurringId) {
+      if (!confirm(`「${e.label}」は毎月の固定費です。今月の分だけ削除しますか？\n（来月以降は引き続き自動追加されます。完全に止めるには「固定費の管理」から削除してください）`)) return;
+      m.skipRec = m.skipRec || [];
+      if (!m.skipRec.includes(e.recurringId)) m.skipRec.push(e.recurringId);
+    } else {
+      if (!confirm(`「${e.label}」${yen(e.amount)} を削除しますか？`)) return;
+    }
+    m.expenses = m.expenses.filter(x => x.id !== id); save(); renderHome();
+  });
+  /* wire recurring template management */
+  $$("#recList .set-row").forEach(row => {
+    const t = recTemplates().find(x => x.id === row.dataset.id);
+    row.querySelector(".recAmt").onclick = () => {
+      const v = prompt(`「${t.label}」の金額（来月以降の自動追加分）`, t.amount);
+      if (v == null) return;
+      const n = numVal(v);
+      if (!n) { toast("金額を確認してください"); return; }
+      t.amount = n; save(); renderHome();
+    };
+    row.querySelector(".recDel").onclick = () => {
+      if (!confirm(`固定費「${t.label}」を削除しますか？\n来月以降は自動追加されません（今月までに追加された分はそのまま残ります）`)) return;
+      DB.settings.recurring = recTemplates().filter(x => x.id !== t.id);
+      save(); renderHome();
+    };
   });
 }
 
-function incDetail(m, key) {
-  const items = m.income[key + "Items"];
-  if (!items || !items.length) return "";
-  return `<details class="pslip"><summary>明細内訳（${items.length}項目）</summary><table>${items.map(it => `<tr><td>${esc(it.label)}</td><td class="num" style="text-align:right">${yen(it.amount)}</td></tr>`).join("")}</table></details>`;
+function incDetailEditor(m, who) {
+  if (!state.incOpen[who]) return "";
+  const items = m.income[who + "Items"] || [];
+  return `<div class="inc-detail" data-who="${who}">
+    ${items.map((it, i) => `<div class="idrow" data-i="${i}">
+      <input class="idl" type="text" value="${esc(it.label)}" placeholder="項目名（例：給料、地域手当、所得税）">
+      <input class="ida num" type="text" inputmode="numeric" value="${fmtIn(it.amount)}" placeholder="0">
+      <button type="button" class="iconb idDel" aria-label="削除">✕</button>
+    </div>`).join("")}
+    ${items.length ? "" : '<div class="empty" style="padding:6px 0">まだ明細がありません。「取込→給与明細」の写真読み取りで自動入力されるほか、ここで手入力もできます。</div>'}
+    <div class="frow" style="margin-top:6px">
+      <button type="button" class="btn mini ghost idAdd">＋ 項目を追加</button>
+      <button type="button" class="btn mini ghost idCopy">📋 前回の内訳をコピー</button>
+    </div>
+  </div>`;
 }
 
 /* donut chart for current month */
@@ -934,11 +1052,29 @@ function renderPreview() {
       </tr>`).join("")}
       </tbody>
     </table></div>
+    <div class="frow" style="margin-top:12px;align-items:flex-end;border-top:1px solid var(--hairline);padding-top:12px">
+      <div class="field"><label>実際の引き落とし額と照合（任意）</label>
+        <input type="text" inputmode="numeric" id="reconAmt" class="num" value="${state.reconcile ? fmtIn(state.reconcile) : ""}" placeholder="例：70,000" style="width:140px;text-align:right"></div>
+      <span id="reconMsg" class="note" style="flex:1;min-width:180px"></span>
+    </div>
     <div class="frow" style="margin-top:12px;justify-content:flex-end">
       <button class="btn ghost" id="impCancel">クリア</button>
       <button class="btn" id="impCommit">選択した${nSel}件を登録</button>
     </div>
   </div>`;
+  const updRecon = () => {
+    const el = $("#reconMsg");
+    const target = numVal($("#reconAmt").value);
+    state.reconcile = target || null;
+    if (!target) { el.innerHTML = ""; return; }
+    const selSum = state.impRows.filter(r => r.checked).reduce((s, r) => s + r.amount, 0);
+    const diff = target - selSum;
+    el.innerHTML = diff === 0
+      ? '<b style="color:var(--plus)">✅ 内訳合計と一致しています</b>'
+      : `<b style="color:var(--minus)">⚠️ 差額 ${yenS(diff)}</b><br>引き落とし ${yen(target)} − 内訳合計 ${yen(selSum)}。明細の期間がズレていないか、チェックの外れた行がないか確認してください。`;
+  };
+  $("#reconAmt").oninput = updRecon;
+  updRecon();
   $$("#impPreview tbody tr").forEach(tr => {
     const r = state.impRows.find(x => x.id === tr.dataset.id);
     tr.querySelector("input[type=checkbox]").onchange = e => { r.checked = e.target.checked; renderPreview(); };
@@ -1083,14 +1219,14 @@ function renderPsResult() {
     <div style="margin-top:14px;border-top:1px solid var(--line);padding-top:14px">
       <div class="frow" style="align-items:flex-end">
         <div class="field"><label>読み取った手取り額（振込額）</label>
-          <div class="yen-input"><input type="number" id="psNet" value="${p.net ?? ""}" style="width:170px;text-align:right;font-weight:700"></div></div>
+          <div class="yen-input"><input type="text" inputmode="numeric" id="psNet" class="num" value="${p.net != null ? fmtIn(p.net) : ""}" style="width:170px;text-align:right;font-weight:700"></div></div>
         <button class="btn" id="psApply">この金額を収入に登録</button>
       </div>
       ${p.gross != null || p.ded != null ? `<div class="note" style="margin-top:6px">支給額計 ${p.gross != null ? yen(p.gross) : "—"} ／ 控除合計 ${p.ded != null ? yen(p.ded) : "—"}</div>` : ""}
       ${p.items.length ? `<details class="pslip" style="margin-top:8px"><summary>読み取った全${p.items.length}項目を確認</summary><table>${p.items.map(it => `<tr><td>${esc(it.label)}</td><td class="num" style="text-align:right">${yen(it.amount)}</td></tr>`).join("")}</table></details>` : '<div class="empty">項目を読み取れませんでした。「項目名 金額」の形で1行ずつになっているか確認してください。</div>'}
     </div>`;
   $("#psApply").onclick = () => {
-    const val = Number($("#psNet").value);
+    const val = numVal($("#psNet").value);
     if (!val) { toast("金額を確認してください"); return; }
     const who = $("#psWho").value, ym = $("#psMonth").value || state.cur;
     const m = monthOf(ym, true);
@@ -1326,7 +1462,7 @@ function renderSettings() {
     <div class="card">
       <h2>🎯 目標設定</h2>
       <div class="frow">
-        <div class="field"><label>目標金額（円）</label><input type="number" id="gAmt" inputmode="numeric" value="${s.goal?.amount || ""}" style="width:160px;text-align:right;font-weight:700"></div>
+        <div class="field"><label>目標金額（円）</label><input type="text" id="gAmt" inputmode="numeric" class="num" value="${fmtIn(s.goal?.amount)}" style="width:160px;text-align:right;font-weight:700"></div>
         <div class="field"><label>期限</label><input type="date" id="gDl" value="${s.goal?.deadline || ""}"></div>
         <button class="btn" id="gSave">保存</button>
       </div>
@@ -1390,7 +1526,7 @@ function renderSettings() {
     if ($("#setGeminiModel")) s.geminiModel = $("#setGeminiModel").value.trim() || DEFAULT_GEMINI_MODEL;
     save(); toast("API設定を保存しました");
   };
-  $("#gSave").onclick = () => { s.goal = { amount: Number($("#gAmt").value) || 0, deadline: $("#gDl").value }; save(); toast("目標を保存しました"); };
+  $("#gSave").onclick = () => { s.goal = { amount: numVal($("#gAmt").value), deadline: $("#gDl").value }; save(); toast("目標を保存しました"); };
   $("#nSave").onclick = () => { s.husbandName = $("#nH").value.trim() || "夫"; s.wifeName = $("#nW").value.trim() || "妻"; save(); toast("名前を保存しました"); };
   $$(".delCat").forEach(b => b.onclick = () => {
     const id = b.closest(".set-row").dataset.id;
