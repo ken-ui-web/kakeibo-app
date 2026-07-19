@@ -857,6 +857,11 @@ async function fetchGmailAndParse(query, onProgress) {
     results.forEach(msg => { if (msg) bodies.push(extractBodies(msg.payload)); done++; });
     if (onProgress) onProgress(done, ids.length);
   }
+  /* 解析デバッグ用に先頭3通の抽出テキストを保持 */
+  state.gmailDebug = bodies.slice(0, 3).map(b => ({
+    plain: (b.plain || "").slice(0, 4000),
+    html: (b.html || "").slice(0, 4000)
+  }));
   const rows = [];
   bodies.forEach(b => {
     /* プレーンテキストとHTMLの両方を解析し、店名が取れている方を採用（同じ取引は日付+金額で同一視） */
@@ -942,6 +947,13 @@ function renderImport() {
       <button class="btn" id="gmFetch">${gmailConnected() ? "📩 Gmailから取得する" : "🔌 Gmailに接続して取得"}</button>
       <span id="gmStatus" class="note"></span>
     </div>
+    ${state.gmailDebug && state.gmailDebug.length ? `
+    <details style="margin:10px 0">
+      <summary style="cursor:pointer;font-size:12.5px;font-weight:700;color:var(--ink2)">🔍 メールの解析デバッグ（店名がうまく読み取れないときに開く）</summary>
+      <div class="note" style="margin:6px 0">アプリがメールから読み取った生のテキストです。店名の読み取りがおかしい場合は、<b>この内容をすべてコピーしてClaudeに貼り付けて</b>ください。実際の形式に合わせて修正できます。</div>
+      <textarea readonly style="min-height:180px;font-size:11px" onclick="this.select()">${esc(state.gmailDebug.map((b, i) =>
+        `===== メール${i + 1}【テキスト版】=====\n${b.plain || "(なし)"}\n\n===== メール${i + 1}【HTML版から抽出】=====\n${b.html || "(なし)"}`).join("\n\n"))}</textarea>
+    </details>` : ""}
     <div style="border-top:1px solid var(--line);margin:14px 0"></div>
     <div class="hint">または、メール本文をコピーして貼り付けてください。<b>複数のメールをまとめて貼り付けてもOK</b>です（自動で分割します）。</div>
     <textarea id="impText" placeholder="メール本文を貼り付け&#10;ご利用日時：2026/07/15 12:34&#10;ご利用店舗：セブン－イレブン&#10;決済総額：¥646"></textarea>
@@ -1006,12 +1018,11 @@ function renderImport() {
     $("#gmStatus").textContent = "🔄 検索中...";
     try {
       const rows = await fetchGmailAndParse(query, (done, total) => { const el = $("#gmStatus"); if (el) el.textContent = `🔄 読み込み中 (${done}/${total})`; });
-      if (!rows.length) { $("#gmStatus").textContent = ""; toast("該当するメールが見つかりませんでした"); return; }
+      if (!rows.length) { toast("該当するメールが見つかりませんでした"); renderImport(); return; }
       state.impRows = rows.map(r => ({ ...r, id: uid(), cat: guessCat(r.label) || "other", checked: true, guessed: guessCat(r.label) || "other" }));
       markDups();
       DB.settings.gmailLastSync = new Date().toISOString(); save();
-      $("#gmStatus").textContent = "";
-      renderPreview();
+      renderImport();
     } catch (err) { $("#gmStatus").textContent = ""; toast(err.message || "取得に失敗しました"); }
   };
 
