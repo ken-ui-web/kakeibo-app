@@ -857,7 +857,9 @@ async function fetchGmailAndParse(query, onProgress) {
     results.forEach(msg => { if (msg) bodies.push(extractMailBody(msg.payload)); done++; });
     if (onProgress) onProgress(done, ids.length);
   }
-  return parseRakutenMail(bodies.join("\n\n"));
+  const rows = [];
+  bodies.forEach(body => { if (body) rows.push(...parseRakutenMail(body)); });
+  return rows;
 }
 
 function fileToBase64(file) {
@@ -1188,15 +1190,34 @@ function parseCSVText(text) {
 }
 
 /* ---------- 楽天ペイ / カード速報メール parser ---------- */
+const STORE_LABEL_RE = /(?:ご利用店舗名?|ご利用店名|ご利用先|利用店舗|利用先|加盟店名?|店舗名|ショップ名)/;
+/* 「ご利用店舗宛に直接ご連絡ください」等の定型文・案内文を店名として拾わないための除外 */
+const STORE_BAD_RE = /宛|ご連絡|お問い合わせ|お問合せ|ください|下さい|直接|につきまして|に関しまして|下記|以下|こちら|詳細|確認|楽天ペイ|楽天カード|^[\s:：]*$/;
+function pickStore(block) {
+  const lines = block.split(/\r?\n/).map(l => l.trim()).filter(l => l);
+  const isAmountish = s => /^[¥￥]?[\d,，.\s]+円?$/.test(s);
+  const isDateish = s => /20\d{2}[\/\-年]/.test(s);
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(new RegExp(STORE_LABEL_RE.source + "[\\s:：]*(.*)$"));
+    if (!m) continue;
+    const cand = (m[1] || "").trim();
+    if (cand && !STORE_BAD_RE.test(cand) && !isAmountish(cand) && !isDateish(cand)) return cand.slice(0, 40);
+    if (!cand) {
+      /* ラベルと値が別の行に分かれているメール形式（HTMLテーブル等）に対応 */
+      const nl = lines[i + 1];
+      if (nl && !STORE_BAD_RE.test(nl) && !STORE_LABEL_RE.test(nl) && !isAmountish(nl) && !isDateish(nl) &&
+          !/^(ご利用|決済|お支払|支払|ポイント|合計|注文|伝票|承認)/.test(nl)) return nl.slice(0, 40);
+    }
+  }
+  return null;
+}
 function parseRakutenMail(text) {
   const blocks = text.split(/(?=ご利用日時|ご利用日[^時]|カード利用のお知らせ|楽天ペイアプリご利用内容確認)/).filter(b => b.trim());
   const rows = [];
   for (const b of blocks) {
     const d = parseDateStr(b);
     if (!d) continue;
-    let store = null;
-    const sm = b.match(/(?:ご利用店舗|ご利用店名|ご利用先|利用店舗|利用先)\s*[:：]?\s*(.+)/);
-    if (sm) store = sm[1].split(/\r?\n/)[0].trim();
+    const store = pickStore(b);
     let amt = null;
     const am = b.match(/(?:決済総額|お支払金額|ご利用金額|合計金額|利用金額)\s*[:：]?\s*[¥￥]?\s*([\d,]+)\s*円?/);
     if (am) amt = Number(am[1].replace(/,/g, ""));
