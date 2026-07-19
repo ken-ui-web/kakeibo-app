@@ -332,8 +332,13 @@ const KW = [
 ];
 
 /* ---------- Google integration defaults ---------- */
-const OLD_GMAIL_QUERY = "(from:rakuten-card.co.jp OR from:rakuten.co.jp) (ご利用のお知らせ OR ご利用内容確認 OR カード利用)";
-const DEFAULT_GMAIL_QUERY = "from:(rakuten-card.co.jp OR pay.rakuten.co.jp OR rakuten.co.jp)";
+const OLD_GMAIL_QUERIES = [
+  "(from:rakuten-card.co.jp OR from:rakuten.co.jp) (ご利用のお知らせ OR ご利用内容確認 OR カード利用)",
+  "from:(rakuten-card.co.jp OR pay.rakuten.co.jp OR rakuten.co.jp)"
+];
+/* 楽天ペイの決済通知メールの送信元のみ。rakuten.co.jp全体にすると広告メルマガが混ざるので不可。
+   楽天カードの利用分はe-NAVIのCSV取込を使う運用のため、カード速報メールもあえて含めない（二重計上防止） */
+const DEFAULT_GMAIL_QUERY = "from:(pay.rakuten.co.jp OR checkout.rakuten.co.jp)";
 const DEFAULT_GEMINI_MODEL = "gemini-2.0-flash";
 const inArtifact = !!(window.claude && (window.claude.downloads || window.claude.mcp));
 
@@ -365,8 +370,8 @@ function load() {
 }
 function migrate() {
   const s = DB.settings || {};
-  // 旧Gmail検索条件（日本語キーワード付きでヒットしないことがある）を新形式に置き換え
-  if (!s.gmailQuery || s.gmailQuery === OLD_GMAIL_QUERY) { s.gmailQuery = DEFAULT_GMAIL_QUERY; save(); }
+  // 旧Gmail検索条件（キーワードでヒットしない／広告が混ざる）を新形式に置き換え
+  if (!s.gmailQuery || OLD_GMAIL_QUERIES.includes(s.gmailQuery)) { s.gmailQuery = DEFAULT_GMAIL_QUERY; save(); }
 }
 function save() {
   try { localStorage.setItem(LS_KEY, JSON.stringify(DB)); }
@@ -862,19 +867,27 @@ async function fetchGmailAndParse(query, onProgress) {
     plain: (b.plain || "").slice(0, 4000),
     html: (b.html || "").slice(0, 4000)
   }));
-  const rows = [];
+  /* 全メールのプレーンテキスト版とHTML版を両方解析して統合。
+     同じ取引（同じ日付・金額）の二重通知はひとつにまとめ、店名が取れている行を優先する */
+  const byKey = new Map();
   bodies.forEach(b => {
-    /* プレーンテキストとHTMLの両方を解析し、店名が取れている方を採用（同じ取引は日付+金額で同一視） */
-    const rowsP = b.plain ? parseRakutenMail(b.plain) : [];
-    const rowsH = b.html ? parseRakutenMail(b.html) : [];
-    const map = new Map();
-    [...rowsP, ...rowsH].forEach(r => {
+    const parsed = [
+      ...(b.plain ? parseRakutenMail(b.plain) : []),
+      ...(b.html ? parseRakutenMail(b.html) : [])
+    ];
+    parsed.forEach(r => {
       const k = r.ym + "|" + r.day + "|" + r.amount;
-      const ex = map.get(k);
-      if (!ex || (ex.label === "楽天ペイ利用" && r.label !== "楽天ペイ利用")) map.set(k, r);
+      const list = byKey.get(k);
+      if (!list) { byKey.set(k, [r]); return; }
+      if (MAIL_FALLBACK_LABELS.includes(r.label)) return;
+      const iFall = list.findIndex(x => MAIL_FALLBACK_LABELS.includes(x.label));
+      if (iFall >= 0) { list[iFall] = r; return; }
+      if (!list.some(x => x.label === r.label)) list.push(r);
     });
-    rows.push(...map.values());
   });
+  const rows = [];
+  byKey.forEach(list => rows.push(...list));
+  rows.sort((a, b) => a.ym === b.ym ? a.day - b.day : cmpYM(a.ym, b.ym));
   return rows;
 }
 
@@ -1235,23 +1248,25 @@ function pickStore(block) {
 }
 function parseRakutenMail(text) {
   const blocks = text.split(/(?=ご利用日時|ご利用日[^時]|カード利用のお知らせ|楽天ペイアプリご利用内容確認)/).filter(b => b.trim());
+  /* メール種別はテキスト全体から判定（分割後のブロックにヘッダーが残らないため） */
+  const mailFallback = /カード利用のお知らせ|楽天カード/.test(text) ? "楽天カード利用" : "楽天ペイ利用";
   const rows = [];
   for (const b of blocks) {
+    /* 決済通知らしさの確認：広告メール等を明細と誤認しない */
+    if (!/ご利用日時|ご利用日|カード利用|ご利用内容/.test(b)) continue;
     const d = parseDateStr(b);
     if (!d) continue;
-    const store = pickStore(b);
-    let amt = null;
-    const am = b.match(/(?:決済総額|お支払金額|ご利用金額|合計金額|利用金額)\s*[:：]?\s*[¥￥]?\s*([\d,]+)\s*円?/);
-    if (am) amt = Number(am[1].replace(/,/g, ""));
-    if (!amt) {
-      const any = b.match(/[¥￥]\s*([\d,]+)/);
-      if (any) amt = Number(any[1].replace(/,/g, ""));
-    }
+    /* 金額は「決済総額」等のラベル付きのみ採用（広告内の商品価格を拾わないため、裸の¥金額は不採用） */
+    const am = b.match(/(?:決済総額|お支払い?金額|ご利用金額|合計金額|利用金額)\s*[:：]?\s*[¥￥]?\s*([\d,]+)\s*円?/);
+    if (!am) continue;
+    const amt = Number(am[1].replace(/,/g, ""));
     if (!amt) continue;
-    rows.push({ ym: d.ym, day: d.day, label: store || "楽天ペイ利用", amount: amt });
+    const store = pickStore(b);
+    rows.push({ ym: d.ym, day: d.day, label: store || mailFallback, amount: amt });
   }
   return rows;
 }
+const MAIL_FALLBACK_LABELS = ["楽天ペイ利用", "楽天カード利用"];
 
 /* ---------- payslip parser ---------- */
 function parsePayslip(text) {
