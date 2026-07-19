@@ -816,23 +816,23 @@ function b64urlToText(b64url) {
 function stripHtml(html) {
   return html.replace(/<style[\s\S]*?<\/style>/gi, "").replace(/<script[\s\S]*?<\/script>/gi, "")
     .replace(/<br\s*\/?>/gi, "\n").replace(/<\/(p|div|tr|td|li|h\d)>/gi, "\n").replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+    .replace(/&nbsp;/gi, " ").replace(/&yen;/gi, "¥").replace(/&amp;/gi, "&").replace(/&lt;/gi, "<").replace(/&gt;/gi, ">").replace(/&quot;/gi, '"')
+    .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)))
+    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
     .replace(/[ \t]+/g, " ").replace(/\n{2,}/g, "\n").trim();
 }
-function extractMailBody(payload) {
-  if (!payload) return "";
+function extractBodies(payload) {
   const walk = (part, wantType) => {
     if (!part) return null;
     if (part.mimeType === wantType && part.body && part.body.data) return b64urlToText(part.body.data);
     if (part.parts) { for (const p of part.parts) { const r = walk(p, wantType); if (r) return r; } }
     return null;
   };
-  const plain = walk(payload, "text/plain");
-  if (plain) return plain;
-  const html = walk(payload, "text/html");
-  if (html) return stripHtml(html);
-  if (payload.body && payload.body.data) return b64urlToText(payload.body.data);
-  return "";
+  const plain = payload ? walk(payload, "text/plain") : null;
+  const htmlRaw = payload ? walk(payload, "text/html") : null;
+  let fallback = "";
+  if (!plain && !htmlRaw && payload && payload.body && payload.body.data) fallback = b64urlToText(payload.body.data);
+  return { plain: plain || fallback || "", html: htmlRaw ? stripHtml(htmlRaw) : "" };
 }
 async function gmailApi(path, params) {
   const url = new URL("https://gmail.googleapis.com/gmail/v1/users/me/" + path);
@@ -854,11 +854,22 @@ async function fetchGmailAndParse(query, onProgress) {
   for (let i = 0; i < ids.length; i += batchSize) {
     const batch = ids.slice(i, i + batchSize);
     const results = await Promise.all(batch.map(id => gmailApi("messages/" + id, { format: "full" }).catch(() => null)));
-    results.forEach(msg => { if (msg) bodies.push(extractMailBody(msg.payload)); done++; });
+    results.forEach(msg => { if (msg) bodies.push(extractBodies(msg.payload)); done++; });
     if (onProgress) onProgress(done, ids.length);
   }
   const rows = [];
-  bodies.forEach(body => { if (body) rows.push(...parseRakutenMail(body)); });
+  bodies.forEach(b => {
+    /* プレーンテキストとHTMLの両方を解析し、店名が取れている方を採用（同じ取引は日付+金額で同一視） */
+    const rowsP = b.plain ? parseRakutenMail(b.plain) : [];
+    const rowsH = b.html ? parseRakutenMail(b.html) : [];
+    const map = new Map();
+    [...rowsP, ...rowsH].forEach(r => {
+      const k = r.ym + "|" + r.day + "|" + r.amount;
+      const ex = map.get(k);
+      if (!ex || (ex.label === "楽天ペイ利用" && r.label !== "楽天ペイ利用")) map.set(k, r);
+    });
+    rows.push(...map.values());
+  });
   return rows;
 }
 
