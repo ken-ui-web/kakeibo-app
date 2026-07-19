@@ -921,7 +921,12 @@ async function callGeminiOCR(base64, mimeType) {
   }
   if (!res.ok) {
     const body = await res.json().catch(() => null);
-    throw new Error((body && body.error && body.error.message) || ("Gemini APIエラー（" + res.status + "）"));
+    const raw = (body && body.error && body.error.message) || ("Gemini APIエラー（" + res.status + "）");
+    console.error("Gemini API error:", raw);
+    if (res.status === 429 || /quota|RESOURCE_EXHAUSTED/i.test(raw)) {
+      throw new Error(`このAPIキーは「${model}」モデルの無料枠が0に設定されているようです。Google AI Studio（aistudio.google.com/apikey）でキーの発行し直し、または設定画面の詳細設定でモデル名を変更してお試しください。`);
+    }
+    throw new Error(raw);
   }
   const data = await res.json();
   const text = data && data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts && data.candidates[0].content.parts[0] && data.candidates[0].content.parts[0].text;
@@ -1036,7 +1041,10 @@ function renderImport() {
       markDups();
       DB.settings.gmailLastSync = new Date().toISOString(); save();
       renderImport();
-    } catch (err) { $("#gmStatus").textContent = ""; toast(err.message || "取得に失敗しました"); }
+    } catch (err) {
+      const el = $("#gmStatus");
+      if (el) el.innerHTML = '<span style="color:var(--minus);display:inline-block;max-width:520px;line-height:1.6">⚠️ ' + esc((err && err.message) || "取得に失敗しました") + "</span>";
+    }
   };
 
   if ($("#psPhoto")) $("#psPhoto").onchange = async e => {
@@ -1055,9 +1063,8 @@ function renderImport() {
       statusEl.textContent = "✅ 読み取り完了";
       renderPsResult();
     } catch (err) {
-      statusEl.textContent = "";
-      if (err && err.noKey) toast("設定画面でGemini APIキーを登録してください");
-      else toast("読み取りに失敗しました：" + (err && err.message || ""));
+      if (err && err.noKey) { statusEl.textContent = ""; toast("設定画面でGemini APIキーを登録してください"); }
+      else statusEl.innerHTML = '<span style="color:var(--minus);display:inline-block;max-width:520px;line-height:1.6">⚠️ ' + esc((err && err.message) || "読み取りに失敗しました") + "</span>";
     }
   };
 
