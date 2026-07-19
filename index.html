@@ -332,7 +332,8 @@ const KW = [
 ];
 
 /* ---------- Google integration defaults ---------- */
-const DEFAULT_GMAIL_QUERY = "(from:rakuten-card.co.jp OR from:rakuten.co.jp) (ご利用のお知らせ OR ご利用内容確認 OR カード利用)";
+const OLD_GMAIL_QUERY = "(from:rakuten-card.co.jp OR from:rakuten.co.jp) (ご利用のお知らせ OR ご利用内容確認 OR カード利用)";
+const DEFAULT_GMAIL_QUERY = "from:(rakuten-card.co.jp OR pay.rakuten.co.jp OR rakuten.co.jp)";
 const DEFAULT_GEMINI_MODEL = "gemini-2.0-flash";
 const inArtifact = !!(window.claude && (window.claude.downloads || window.claude.mcp));
 
@@ -357,10 +358,15 @@ let DB;
 function load() {
   try {
     const raw = localStorage.getItem(LS_KEY);
-    if (raw) { DB = JSON.parse(raw); return; }
+    if (raw) { DB = JSON.parse(raw); migrate(); return; }
   } catch (e) {}
   DB = seedData();
   save();
+}
+function migrate() {
+  const s = DB.settings || {};
+  // 旧Gmail検索条件（日本語キーワード付きでヒットしないことがある）を新形式に置き換え
+  if (!s.gmailQuery || s.gmailQuery === OLD_GMAIL_QUERY) { s.gmailQuery = DEFAULT_GMAIL_QUERY; save(); }
 }
 function save() {
   try { localStorage.setItem(LS_KEY, JSON.stringify(DB)); }
@@ -453,6 +459,16 @@ function renderHome() {
     else m.assets = [];
   }
   ensureRecurring(ym, m);
+  // 楽天キャッシュ残高の口座を一度だけ自動追加（今月以降を開いたとき）
+  DB.migrations = DB.migrations || {};
+  if (!DB.migrations.rakutenCash && cmpYM(ym, todayYM()) >= 0) {
+    if (!m.assets.some(a => (a.name || "").includes("楽天キャッシュ"))) {
+      m.assets.push({ id: uid(), name: "楽天キャッシュ残高（" + (DB.settings.husbandName || "夫") + "）", type: "cash", amount: 0 });
+      m.assets.push({ id: uid(), name: "楽天キャッシュ残高（" + (DB.settings.wifeName || "妻") + "）", type: "cash", amount: 0 });
+    }
+    DB.migrations.rakutenCash = true;
+    save();
+  }
   const { inc, exp, bal } = totals(ym);
   const aTotal = assetTotal(m.assets);
   const cash = assetTotal(m.assets.filter(a => a.type !== "invest"));
@@ -972,9 +988,8 @@ function renderImport() {
       $("#gmStatus").textContent = "";
     }
     const days = Number($("#gmRange").value);
-    const since = new Date(Date.now() - days * 86400000);
-    const dateStr = since.getFullYear() + "/" + (since.getMonth() + 1) + "/" + since.getDate();
-    const query = (DB.settings.gmailQuery || DEFAULT_GMAIL_QUERY) + " after:" + dateStr;
+    const sinceEpoch = Math.floor((Date.now() - days * 86400000) / 1000);
+    const query = (DB.settings.gmailQuery || DEFAULT_GMAIL_QUERY) + " after:" + sinceEpoch;
     $("#gmStatus").textContent = "🔄 検索中...";
     try {
       const rows = await fetchGmailAndParse(query, (done, total) => { const el = $("#gmStatus"); if (el) el.textContent = `🔄 読み込み中 (${done}/${total})`; });
@@ -1052,29 +1067,32 @@ function renderPreview() {
       </tr>`).join("")}
       </tbody>
     </table></div>
+    ${state.impTab === "pay" ? `
     <div class="frow" style="margin-top:12px;align-items:flex-end;border-top:1px solid var(--hairline);padding-top:12px">
-      <div class="field"><label>実際の引き落とし額と照合（任意）</label>
+      <div class="field"><label>楽天キャッシュの利用合計と照合（任意）</label>
         <input type="text" inputmode="numeric" id="reconAmt" class="num" value="${state.reconcile ? fmtIn(state.reconcile) : ""}" placeholder="例：70,000" style="width:140px;text-align:right"></div>
       <span id="reconMsg" class="note" style="flex:1;min-width:180px"></span>
-    </div>
+    </div>` : ""}
     <div class="frow" style="margin-top:12px;justify-content:flex-end">
       <button class="btn ghost" id="impCancel">クリア</button>
       <button class="btn" id="impCommit">選択した${nSel}件を登録</button>
     </div>
   </div>`;
-  const updRecon = () => {
-    const el = $("#reconMsg");
-    const target = numVal($("#reconAmt").value);
-    state.reconcile = target || null;
-    if (!target) { el.innerHTML = ""; return; }
-    const selSum = state.impRows.filter(r => r.checked).reduce((s, r) => s + r.amount, 0);
-    const diff = target - selSum;
-    el.innerHTML = diff === 0
-      ? '<b style="color:var(--plus)">✅ 内訳合計と一致しています</b>'
-      : `<b style="color:var(--minus)">⚠️ 差額 ${yenS(diff)}</b><br>引き落とし ${yen(target)} − 内訳合計 ${yen(selSum)}。明細の期間がズレていないか、チェックの外れた行がないか確認してください。`;
-  };
-  $("#reconAmt").oninput = updRecon;
-  updRecon();
+  if ($("#reconAmt")) {
+    const updRecon = () => {
+      const el = $("#reconMsg");
+      const target = numVal($("#reconAmt").value);
+      state.reconcile = target || null;
+      if (!target) { el.innerHTML = ""; return; }
+      const selSum = state.impRows.filter(r => r.checked).reduce((s, r) => s + r.amount, 0);
+      const diff = target - selSum;
+      el.innerHTML = diff === 0
+        ? '<b style="color:var(--plus)">✅ 内訳合計と一致しています</b>'
+        : `<b style="color:var(--minus)">⚠️ 差額 ${yenS(diff)}</b><br>照合額 ${yen(target)} − 内訳合計 ${yen(selSum)}。取得期間がズレていないか、チェックの外れた行がないか確認してください。`;
+    };
+    $("#reconAmt").oninput = updRecon;
+    updRecon();
+  }
   $$("#impPreview tbody tr").forEach(tr => {
     const r = state.impRows.find(x => x.id === tr.dataset.id);
     tr.querySelector("input[type=checkbox]").onchange = e => { r.checked = e.target.checked; renderPreview(); };
