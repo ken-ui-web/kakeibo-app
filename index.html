@@ -339,7 +339,9 @@ const OLD_GMAIL_QUERIES = [
 /* 楽天ペイの決済通知メールの送信元のみ。rakuten.co.jp全体にすると広告メルマガが混ざるので不可。
    楽天カードの利用分はe-NAVIのCSV取込を使う運用のため、カード速報メールもあえて含めない（二重計上防止） */
 const DEFAULT_GMAIL_QUERY = "from:(pay.rakuten.co.jp OR checkout.rakuten.co.jp)";
-const DEFAULT_GEMINI_MODEL = "gemini-2.0-flash";
+const DEFAULT_GEMINI_MODEL = "gemini-2.5-flash";
+/* gemini-2.0-flash等の旧モデルはGoogle側で廃止済み（無料枠0でエラーになる）ため自動で置き換える */
+const DEPRECATED_GEMINI_MODELS = ["gemini-2.0-flash", "gemini-2.0-flash-001", "gemini-1.5-flash", "gemini-1.5-flash-001", "gemini-1.5-pro", "gemini-1.5-pro-001", "gemini-1.0-pro"];
 const inArtifact = !!(window.claude && (window.claude.downloads || window.claude.mcp));
 
 /* ---------- blank starting state ---------- */
@@ -372,6 +374,8 @@ function migrate() {
   const s = DB.settings || {};
   // 旧Gmail検索条件（キーワードでヒットしない／広告が混ざる）を新形式に置き換え
   if (!s.gmailQuery || OLD_GMAIL_QUERIES.includes(s.gmailQuery)) { s.gmailQuery = DEFAULT_GMAIL_QUERY; save(); }
+  // 廃止されたGeminiモデル名（無料枠0でエラーになる）を現行モデルに置き換え
+  if (s.geminiModel && DEPRECATED_GEMINI_MODELS.includes(s.geminiModel)) { s.geminiModel = DEFAULT_GEMINI_MODEL; save(); }
 }
 function save() {
   try { localStorage.setItem(LS_KEY, JSON.stringify(DB)); }
