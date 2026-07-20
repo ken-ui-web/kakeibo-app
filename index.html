@@ -520,6 +520,17 @@ function renderHome() {
   const catChips = DB.settings.categories.filter(c => c.id !== "legacy").map(c =>
     `<button type="button" class="chip" data-cat="${c.id}"><span class="dot" style="background:${c.color}"></span>${esc(c.name)}</button>`).join("");
 
+  // 楽天キャッシュ残高の目安（参考値。誰が使ったかは分からないため2人分は合算・自動入力はしない）
+  const rakutenCashHint = (() => {
+    const prevA = latestAssets(addMonths(ym, -1));
+    if (!prevA) return null;
+    const prevTotal = assetTotal(prevA.assets.filter(a => (a.name || "").includes("楽天キャッシュ")));
+    const usage = m.expenses.filter(e => e.rakutenPay && !CHARGE_RE.test(e.label || "")).reduce((s, e) => s + e.amount, 0);
+    const charge = m.expenses.filter(e => e.rakutenPay && CHARGE_RE.test(e.label || "")).reduce((s, e) => s + e.amount, 0);
+    if (!usage && !charge) return null;
+    return { prevTotal, usage, charge, estimate: prevTotal - usage + charge };
+  })();
+
   $("#view").innerHTML = `
   <div class="tiles">
     <div class="tile"><div class="tl">総収入</div><div class="tv num pos">${yen(inc)}</div><div class="ts">${hName} ${yen(m.income.ken)} ／ ${wName} ${yen(m.income.misuzu)}</div></div>
@@ -579,6 +590,7 @@ function renderHome() {
           <button type="button" class="iconb del" aria-label="削除">✕</button>
         </div>`).join("")}
       </div>
+      ${rakutenCashHint ? `<div class="note" style="margin-top:8px;line-height:1.7">💡 楽天キャッシュ残高の目安：先月合計 ${yen(rakutenCashHint.prevTotal)} − 今月の利用 ${yen(rakutenCashHint.usage)}${rakutenCashHint.charge ? " ＋ チャージ " + yen(rakutenCashHint.charge) : ""} ＝ <b class="num">${yen(rakutenCashHint.estimate)}</b>（参考値。実際の金額は楽天アプリでご確認のうえ、上の欄にご自身で入力してください）</div>` : ""}
       <div style="margin-top:8px"><button class="btn mini ghost" id="addAsset">＋ 口座を追加</button></div>
       <div class="as-sub num"><span>貯金 <b>${yen(cash)}</b> ／ 投資 <b>${yen(inv)}</b></span><span>合計 <b>${yen(aTotal)}</b></span></div>
     </div>
@@ -1402,7 +1414,7 @@ function commitImport() {
   let learned = 0;
   sel.forEach(r => {
     const m = monthOf(r.ym, true);
-    m.expenses.push({ id: uid(), day: r.day, label: r.label, amount: r.amount, cat: r.cat });
+    m.expenses.push({ id: uid(), day: r.day, label: r.label, amount: r.amount, cat: r.cat, ...(state.impTab === "pay" ? { rakutenPay: true } : {}) });
     if (r.cat !== r.guessed && r.label) {
       const kw = r.label.trim().slice(0, 24);
       if (kw.length >= 2 && !(DB.settings.rules || []).some(x => x.kw === kw)) {
