@@ -293,9 +293,14 @@ const LS_KEY = "kakeibo-v1";
 const $ = (s, el) => (el || document).querySelector(s);
 const $$ = (s, el) => Array.from((el || document).querySelectorAll(s));
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-const yen = n => "¥" + Math.round(Number(n) || 0).toLocaleString("ja-JP");
-const yenS = n => (n < 0 ? "−¥" + Math.abs(Math.round(n)).toLocaleString("ja-JP") : yen(n));
 const numVal = v => { const n = Number(String(v ?? "").replace(/[,，\s円¥￥]/g, "")); return isNaN(n) ? 0 : n; };
+/* yenはnumValと同じ寛容なパースを通す：カンマ付き文字列やNaN/undefinedが来ても
+   その場では0円と表示するだけに留め、合計計算側に無効な値を伝播させない */
+const yen = n => "¥" + Math.round(numVal(n)).toLocaleString("ja-JP");
+const yenS = n => (numVal(n) < 0 ? "−¥" + Math.abs(Math.round(numVal(n))).toLocaleString("ja-JP") : yen(n));
+/* 金額の合計を取るときは必ずこれを通す：1件でも不正な値(NaN/undefined/カンマ付き文字列)が混じると
+   reduceの合計全体がNaNになり、そのカテゴリ・グループ丸ごと「¥0」に見えてしまう事故を防ぐ */
+const amtOf = e => numVal(e && e.amount);
 const fmtIn = n => { const x = Number(n); return !x ? "" : x.toLocaleString("ja-JP"); };
 const uid = () => Math.random().toString(36).slice(2, 10);
 const todayYM = () => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0"); };
@@ -413,10 +418,10 @@ function totals(ym) {
   const m = DB.months[ym];
   if (!m) return { inc: 0, exp: 0, bal: 0 };
   const inc = (m.income.ken || 0) + (m.income.misuzu || 0) + (m.income.other || 0);
-  const exp = m.expenses.reduce((s, e) => s + (isChargeExpense(e) ? 0 : (e.amount || 0)), 0);
+  const exp = m.expenses.reduce((s, e) => s + (isChargeExpense(e) ? 0 : amtOf(e)), 0);
   return { inc, exp, bal: inc - exp };
 }
-function assetTotal(list) { return (list || []).reduce((s, a) => s + (a.amount || 0), 0); }
+function assetTotal(list) { return (list || []).reduce((s, a) => s + numVal(a && a.amount), 0); }
 
 /* ---------- recurring fixed expenses (毎月の固定費) ---------- */
 function recTemplates() { return DB.settings.recurring = DB.settings.recurring || []; }
@@ -517,7 +522,7 @@ function renderHome() {
   const byCat = {};
   m.expenses.forEach(e => { (byCat[e.cat] = byCat[e.cat] || []).push(e); });
   const catGroups = Object.entries(byCat)
-    .map(([cid, list]) => ({ cat: catById(cid), list, sum: list.reduce((s, e) => s + (isChargeExpense(e) ? 0 : e.amount), 0) }))
+    .map(([cid, list]) => ({ cat: catById(cid), list, sum: list.reduce((s, e) => s + (isChargeExpense(e) ? 0 : amtOf(e)), 0) }))
     .sort((a, b) => b.sum - a.sum);
   const realExpCount = m.expenses.filter(e => !isChargeExpense(e)).length;
 
@@ -529,8 +534,8 @@ function renderHome() {
     const prevA = latestAssets(addMonths(ym, -1));
     if (!prevA) return null;
     const prevTotal = assetTotal(prevA.assets.filter(a => (a.name || "").includes("楽天キャッシュ")));
-    const usage = m.expenses.filter(e => e.rakutenPay && !CHARGE_RE.test(e.label || "")).reduce((s, e) => s + e.amount, 0);
-    const charge = m.expenses.filter(e => e.rakutenPay && CHARGE_RE.test(e.label || "")).reduce((s, e) => s + e.amount, 0);
+    const usage = m.expenses.filter(e => e.rakutenPay && !CHARGE_RE.test(e.label || "")).reduce((s, e) => s + amtOf(e), 0);
+    const charge = m.expenses.filter(e => e.rakutenPay && CHARGE_RE.test(e.label || "")).reduce((s, e) => s + amtOf(e), 0);
     if (!usage && !charge) return null;
     return { prevTotal, usage, charge, estimate: prevTotal - usage + charge };
   })();
@@ -830,7 +835,7 @@ function expGroupItemsHtml(g2) {
   const normalItems = sorted.filter(e => !CHARGE_RE.test(e.label || ""));
   let html = normalItems.map(expItemHtml).join("");
   if (chargeItems.length > 1) {
-    const sum = chargeItems.reduce((s, e) => s + e.amount, 0);
+    const sum = chargeItems.reduce((s, e) => s + amtOf(e), 0);
     const open = state.chargeOpen === g2.cat.id;
     html += `<div class="exp-item" data-id="charge-${g2.cat.id}">
       <span class="d num">・</span>
@@ -1365,9 +1370,10 @@ function renderImport() {
           const preview = txs.map(t => `${t.date}\t${t.store}\t${t.amount}`).join("\n");
           $("#impText").value = preview;
           statusEl.textContent = `✅ AIが${txs.length}件の取引を読み取りました`;
-          state.impRows = txs.filter(t => t.date && t.amount).map(t => {
+          state.impRows = txs.map(t => {
             const d = parseDateStr(t.date);
-            return d ? { ym: d.ym, day: d.day, label: t.store || "利用", amount: Number(t.amount) } : null;
+            const amt = numVal(t.amount);
+            return (d && amt) ? { ym: d.ym, day: d.day, label: t.store || "利用", amount: amt } : null;
           }).filter(Boolean).map(r => ({ ...r, id: uid(), cat: guessCat(r.label) || "other", checked: true, guessed: guessCat(r.label) || "other" }));
           markDups();
           renderPreview();
@@ -1481,7 +1487,7 @@ function renderPreview() {
   const rows = state.impRows;
   const cats = DB.settings.categories.filter(c => c.id !== "legacy");
   const nSel = rows.filter(r => r.checked).length;
-  const sum = rows.filter(r => r.checked).reduce((s, r) => s + r.amount, 0);
+  const sum = rows.filter(r => r.checked).reduce((s, r) => s + numVal(r.amount), 0);
   $("#impPreview").innerHTML = `
   <div class="card">
     <h2>プレビュー <span class="sp num">${nSel}件選択 ／ ${yen(sum)}</span></h2>
@@ -1515,7 +1521,7 @@ function renderPreview() {
       const target = numVal($("#reconAmt").value);
       state.reconcile = target || null;
       if (!target) { el.innerHTML = ""; return; }
-      const selSum = state.impRows.filter(r => r.checked).reduce((s, r) => s + r.amount, 0);
+      const selSum = state.impRows.filter(r => r.checked).reduce((s, r) => s + numVal(r.amount), 0);
       const diff = target - selSum;
       el.innerHTML = diff === 0
         ? '<b style="color:var(--plus)">✅ 内訳合計と一致しています</b>'
@@ -1742,7 +1748,7 @@ function renderAnalysis() {
 
   // category stack (top cats over window, excluding legacy・楽天キャッシュチャージは集計対象外)
   const catSums = {};
-  yms.forEach(ym => (DB.months[ym]?.expenses || []).forEach(e => { if (e.cat !== "legacy" && !isChargeExpense(e)) catSums[e.cat] = (catSums[e.cat] || 0) + e.amount; }));
+  yms.forEach(ym => (DB.months[ym]?.expenses || []).forEach(e => { if (e.cat !== "legacy" && !isChargeExpense(e)) catSums[e.cat] = (catSums[e.cat] || 0) + amtOf(e); }));
   const topCats = Object.entries(catSums).sort((a, b) => b[1] - a[1]).slice(0, 7).map(([id]) => id);
   const hasCatData = topCats.length > 0;
 
@@ -1867,9 +1873,10 @@ function stackChart(yms, topCats) {
     const per = {}; let other = 0, tot = 0;
     (DB.months[ym]?.expenses || []).forEach(e => {
       if (e.cat === "legacy" || isChargeExpense(e)) return;
-      tot += e.amount;
-      if (topCats.includes(e.cat)) per[e.cat] = (per[e.cat] || 0) + e.amount;
-      else other += e.amount;
+      const v = amtOf(e);
+      tot += v;
+      if (topCats.includes(e.cat)) per[e.cat] = (per[e.cat] || 0) + v;
+      else other += v;
     });
     return { ym, per, other, tot };
   });
@@ -1987,7 +1994,7 @@ function renderSettings() {
       <div id="catList">
         ${s.categories.map(c => `
         <div class="set-row" data-id="${c.id}">
-          <span class="cat-dot" style="background:${c.color}"></span>
+          <input type="color" class="catColor" value="${c.color}" title="色を変更" style="width:28px;height:28px;padding:1px;border:1px solid var(--line);border-radius:7px;background:var(--surface)">
           <span style="flex:1;font-weight:600">${esc(c.name)}</span>
           ${c.id !== "other" && c.id !== "legacy" && !inUse.has(c.id) ? '<button class="iconb delCat" aria-label="削除">✕</button>' : '<span class="note">使用中</span>'}
         </div>`).join("")}
@@ -2051,6 +2058,11 @@ function renderSettings() {
   $$(".delCat").forEach(b => b.onclick = () => {
     const id = b.closest(".set-row").dataset.id;
     s.categories = s.categories.filter(c => c.id !== id); save(); renderSettings();
+  });
+  $$(".catColor").forEach(inp => inp.onchange = () => {
+    const id = inp.closest(".set-row").dataset.id;
+    const c = s.categories.find(x => x.id === id);
+    if (c) { c.color = inp.value; save(); toast(`「${c.name}」の色を変更しました`); }
   });
   $("#addCat").onclick = () => {
     const name = $("#newCatName").value.trim();
