@@ -882,6 +882,10 @@ function gmailConnected() { return !!(gmailToken && gmailToken.expiresAt > Date.
 async function connectGmail() {
   const clientId = (DB.settings.googleClientId || "").trim();
   if (!clientId) { toast("設定画面でGoogleクライアントIDを登録してください"); return false; }
+  if (!/^\d+-[\w-]+\.apps\.googleusercontent\.com$/.test(clientId)) {
+    toast("Google OAuthクライアントIDの形式が正しくないようです（〜.apps.googleusercontent.com で終わる文字列のはずです）。設定画面で貼り付け直してください");
+    return false;
+  }
   try { await loadGIS(); }
   catch (e) { toast("Google連携を読み込めませんでした。GitHub Pagesで公開したURLから開いてください。"); return false; }
   return new Promise(resolve => {
