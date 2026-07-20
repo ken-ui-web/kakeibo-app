@@ -173,7 +173,9 @@ textarea{width:100%;min-height:130px;resize:vertical;font-size:13px;line-height:
 .grp-h .amt{margin-left:auto}
 .exp-item{display:flex;align-items:center;gap:8px;padding:7px 0 7px 17px;border-top:1px solid var(--hairline);font-size:14px}
 .exp-item .d{color:var(--ink3);font-size:12px;width:2.6em}
-.exp-item .l{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.exp-item .l{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border:0;background:none;text-align:left;font-size:14px;color:var(--ink);cursor:pointer;padding:2px 4px;border-radius:6px;font-family:inherit}
+.exp-item .l:hover{background:var(--surface2)}
+.catPickRow{padding:4px 0 8px 34px}
 .exp-item .a{font-weight:600}
 .empty{color:var(--ink3);font-size:13px;text-align:center;padding:18px 0}
 
@@ -426,7 +428,7 @@ function ensureRecurring(ym, m) {
 }
 
 /* ---------- app state ---------- */
-const state = { view: "home", cur: todayYM(), impTab: "csv", impRows: [], impNotice: "", range: 12, rangeStart: "", psParsed: null, incOpen: {}, reconcile: null, expAddOpen: false };
+const state = { view: "home", cur: todayYM(), impTab: "csv", impRows: [], impNotice: "", range: 12, rangeStart: "", psParsed: null, incOpen: {}, reconcile: null, expAddOpen: false, catPickerFor: null };
 
 /* ---------- toast ---------- */
 let toastTimer;
@@ -604,10 +606,12 @@ function renderHome() {
           <div class="grp-h"><span class="dot" style="background:${g2.cat.color}"></span>${esc(g2.cat.name)}<span class="amt num">${yen(g2.sum)}</span></div>
           ${g2.list.sort((a, b) => a.day - b.day).map(e => `
             <div class="exp-item" data-id="${e.id}">
-              <span class="d num">${e.day}日</span><span class="l">${e.recurringId ? '<span class="pin" title="毎月の固定費">📌</span> ' : ""}${esc(e.label)}</span>
+              <span class="d num">${e.day}日</span>
+              <button type="button" class="l expLabelBtn" title="タップでカテゴリを変更">${e.recurringId ? '<span class="pin" title="毎月の固定費">📌</span> ' : ""}${esc(e.label)}</button>
               <button type="button" class="editAmt num" title="タップで金額を変更">${yen(e.amount)}</button>
               <button type="button" class="iconb delExp" aria-label="削除">✕</button>
-            </div>`).join("")}
+            </div>
+            ${state.catPickerFor === e.id ? `<div class="catchips catPickRow">${DB.settings.categories.filter(c => c.id !== "legacy").map(c => `<button type="button" class="chip catPick ${c.id === e.cat ? "on" : ""}" data-id="${e.id}" data-cat="${c.id}"><span class="dot" style="background:${c.color}"></span>${esc(c.name)}</button>`).join("")}</div>` : ""}`).join("")}
         </div>`).join("") : '<div class="empty">まだ支出がありません。上のフォームか「取込」タブから追加できます。</div>'}
     </div>
     ${recTemplates().length ? `
@@ -734,6 +738,29 @@ function renderHome() {
     const n = numVal(v);
     if (!n) { toast("金額を確認してください"); return; }
     e.amount = n; save(); renderHome();
+  });
+  $$("#expList .expLabelBtn").forEach(b => b.onclick = () => {
+    const id = b.closest(".exp-item").dataset.id;
+    state.catPickerFor = state.catPickerFor === id ? null : id;
+    renderHome();
+  });
+  $$("#expList .catPick").forEach(b => b.onclick = () => {
+    const id = b.dataset.id, newCat = b.dataset.cat;
+    const e = m.expenses.find(x => x.id === id);
+    if (e.cat !== newCat) {
+      e.cat = newCat;
+      const kw = (e.label || "").trim().slice(0, 24);
+      if (kw.length >= 2 && !(DB.settings.rules || []).some(x => x.kw === kw)) {
+        DB.settings.rules = DB.settings.rules || [];
+        DB.settings.rules.unshift({ kw, cat: newCat });
+        DB.settings.rules = DB.settings.rules.slice(0, 200);
+        toast(`「${catById(newCat).name}」に変更しました（次回から自動判定します）`);
+      } else {
+        toast(`「${catById(newCat).name}」に変更しました`);
+      }
+    }
+    state.catPickerFor = null;
+    save(); renderHome();
   });
   $$("#expList .delExp").forEach(b => b.onclick = () => {
     const id = b.closest(".exp-item").dataset.id;
