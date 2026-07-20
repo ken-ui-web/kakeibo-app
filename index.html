@@ -548,9 +548,10 @@ function renderHome() {
       </div>
       ${incDetailEditor(m, "misuzu")}
       <div class="inc-row">
-        <div class="inc-name" style="cursor:default">その他<small>児童手当・臨時収入など</small></div>
+        <button type="button" class="inc-name incToggle" data-who="other">その他 <span class="caret">${state.incOpen.other ? "▾" : "▸"}</span><small>${(m.income.otherItems || []).length ? "明細 " + m.income.otherItems.length + "項目 — タップで開く" : "ボーナス・児童手当・臨時収入など — タップで内訳を入力"}</small></button>
         <div class="yen-input"><input type="text" inputmode="numeric" id="incOther" value="${fmtIn(m.income.other)}" placeholder="0"></div>
       </div>
+      ${incDetailEditor(m, "other")}
       <div style="margin-top:10px"><button class="btn mini ghost" id="goPayslip">📷 給与明細を読み取る</button></div>
     </div>
 
@@ -638,11 +639,14 @@ function renderHome() {
   $$(".inc-detail").forEach(box => {
     const who = box.dataset.who;
     const items = m.income[who + "Items"] = m.income[who + "Items"] || [];
+    /* 「その他」は項目の合計＝金額欄（給与明細のように支給・控除が混在しないため合算できる）。
+       常にm.incomeから最新の配列を読む（idCopyが配列を丸ごと差し替えるため、外側のitems変数は参照しない） */
+    const resync = () => { if (who === "other") m.income.other = (m.income.otherItems || []).reduce((s, it) => s + (Number(it.amount) || 0), 0); };
     $$(".idrow", box).forEach(row => {
       const it = items[Number(row.dataset.i)];
       $(".idl", row).onchange = e => { it.label = e.target.value; save(); };
-      $(".ida", row).onchange = e => { it.amount = numVal(e.target.value); save(); renderHome(); };
-      $(".idDel", row).onclick = () => { items.splice(Number(row.dataset.i), 1); save(); renderHome(); };
+      $(".ida", row).onchange = e => { it.amount = numVal(e.target.value); resync(); save(); renderHome(); };
+      $(".idDel", row).onclick = () => { items.splice(Number(row.dataset.i), 1); resync(); save(); renderHome(); };
     });
     $(".idAdd", box).onclick = () => { items.push({ label: "", amount: 0 }); save(); renderHome(); };
     $(".idCopy", box).onclick = () => {
@@ -654,6 +658,7 @@ function renderHome() {
       }
       if (!found) { toast("コピーできる過去の明細がありません"); return; }
       m.income[who + "Items"] = found.map(x => ({ ...x }));
+      resync();
       save(); renderHome(); toast("前回の内訳をコピーしました");
     };
   });
@@ -763,13 +768,18 @@ function renderHome() {
 function incDetailEditor(m, who) {
   if (!state.incOpen[who]) return "";
   const items = m.income[who + "Items"] || [];
+  const isOther = who === "other";
+  const placeholder = isOther ? "項目名（例：拳のボーナス、児童手当）" : "項目名（例：給料、地域手当、所得税）";
+  const emptyMsg = isOther
+    ? "まだ明細がありません。ボーナス（6月・12月など）や児童手当・臨時収入をここで項目ごとに入力できます。"
+    : "まだ明細がありません。「取込→給与明細」の写真読み取りで自動入力されるほか、ここで手入力もできます。";
   return `<div class="inc-detail" data-who="${who}">
     ${items.map((it, i) => `<div class="idrow" data-i="${i}">
-      <input class="idl" type="text" value="${esc(it.label)}" placeholder="項目名（例：給料、地域手当、所得税）">
+      <input class="idl" type="text" value="${esc(it.label)}" placeholder="${placeholder}">
       <input class="ida num" type="text" inputmode="numeric" value="${fmtIn(it.amount)}" placeholder="0">
       <button type="button" class="iconb idDel" aria-label="削除">✕</button>
     </div>`).join("")}
-    ${items.length ? "" : '<div class="empty" style="padding:6px 0">まだ明細がありません。「取込→給与明細」の写真読み取りで自動入力されるほか、ここで手入力もできます。</div>'}
+    ${items.length ? "" : `<div class="empty" style="padding:6px 0">${emptyMsg}</div>`}
     <div class="frow" style="margin-top:6px">
       <button type="button" class="btn mini ghost idAdd">＋ 項目を追加</button>
       <button type="button" class="btn mini ghost idCopy">📋 前回の内訳をコピー</button>
