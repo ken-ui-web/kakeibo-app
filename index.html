@@ -440,7 +440,7 @@ function ensureRakutenCashRows(ym, m) {
 }
 
 /* ---------- app state ---------- */
-const state = { view: "home", cur: todayYM(), impTab: "csv", impRows: [], impNotice: "", range: 12, rangeStart: "", psParsed: null, incOpen: {}, reconcile: null, expAddOpen: false, catPickerFor: null };
+const state = { view: "home", cur: todayYM(), impTab: "csv", impRows: [], impNotice: "", range: 12, rangeStart: "", psParsed: null, incOpen: {}, reconcile: null, expAddOpen: false, catPickerFor: null, chargeOpen: null };
 
 /* ---------- toast ---------- */
 let toastTimer;
@@ -611,14 +611,7 @@ function renderHome() {
       ${catGroups.length ? catGroups.map(g2 => `
         <div class="grp">
           <div class="grp-h"><span class="dot" style="background:${g2.cat.color}"></span>${esc(g2.cat.name)}<span class="amt num">${yen(g2.sum)}</span></div>
-          ${g2.list.sort((a, b) => a.day - b.day).map(e => `
-            <div class="exp-item" data-id="${e.id}">
-              <span class="d num">${e.day}日</span>
-              <button type="button" class="l expLabelBtn" title="タップでカテゴリを変更">${e.recurringId ? '<span class="pin" title="毎月の固定費">📌</span> ' : ""}${esc(e.label)}</button>
-              <button type="button" class="editAmt num" title="タップで金額を変更">${yen(e.amount)}</button>
-              <button type="button" class="iconb delExp" aria-label="削除">✕</button>
-            </div>
-            ${state.catPickerFor === e.id ? `<div class="catchips catPickRow">${DB.settings.categories.filter(c => c.id !== "legacy").map(c => `<button type="button" class="chip catPick ${c.id === e.cat ? "on" : ""}" data-id="${e.id}" data-cat="${c.id}"><span class="dot" style="background:${c.color}"></span>${esc(c.name)}</button>`).join("")}</div>` : ""}`).join("")}
+          ${expGroupItemsHtml(g2)}
         </div>`).join("") : '<div class="empty">まだ支出がありません。上のフォームか「取込」タブから追加できます。</div>'}
     </div>
     ${recTemplates().length ? `
@@ -751,6 +744,11 @@ function renderHome() {
     state.catPickerFor = state.catPickerFor === id ? null : id;
     renderHome();
   });
+  $$("#expList .chargeToggle").forEach(b => b.onclick = () => {
+    const cat = b.dataset.cat;
+    state.chargeOpen = state.chargeOpen === cat ? null : cat;
+    renderHome();
+  });
   $$("#expList .catPick").forEach(b => b.onclick = () => {
     const id = b.dataset.id, newCat = b.dataset.cat;
     const e = m.expenses.find(x => x.id === id);
@@ -797,6 +795,39 @@ function renderHome() {
       save(); renderHome();
     };
   });
+}
+
+/* ---------- 楽天キャッシュチャージ項目の集約表示 ---------- */
+const CHARGE_RE = /チャージ/;
+function expItemHtml(e) {
+  return `<div class="exp-item" data-id="${e.id}">
+      <span class="d num">${e.day}日</span>
+      <button type="button" class="l expLabelBtn" title="タップでカテゴリを変更">${e.recurringId ? '<span class="pin" title="毎月の固定費">📌</span> ' : ""}${esc(e.label)}</button>
+      <button type="button" class="editAmt num" title="タップで金額を変更">${yen(e.amount)}</button>
+      <button type="button" class="iconb delExp" aria-label="削除">✕</button>
+    </div>
+    ${state.catPickerFor === e.id ? `<div class="catchips catPickRow">${DB.settings.categories.filter(c => c.id !== "legacy").map(c => `<button type="button" class="chip catPick ${c.id === e.cat ? "on" : ""}" data-id="${e.id}" data-cat="${c.id}"><span class="dot" style="background:${c.color}"></span>${esc(c.name)}</button>`).join("")}</div>` : ""}`;
+}
+function expGroupItemsHtml(g2) {
+  const sorted = g2.list.slice().sort((a, b) => a.day - b.day);
+  const chargeItems = sorted.filter(e => CHARGE_RE.test(e.label || ""));
+  const normalItems = sorted.filter(e => !CHARGE_RE.test(e.label || ""));
+  let html = normalItems.map(expItemHtml).join("");
+  if (chargeItems.length > 1) {
+    const sum = chargeItems.reduce((s, e) => s + e.amount, 0);
+    const open = state.chargeOpen === g2.cat.id;
+    html += `<div class="exp-item" data-id="charge-${g2.cat.id}">
+      <span class="d num">・</span>
+      <button type="button" class="l chargeToggle" data-cat="${g2.cat.id}" title="タップで内訳を表示">🔋 楽天キャッシュチャージ（${chargeItems.length}件） <span class="caret">${open ? "▾" : "▸"}</span></button>
+      <span class="editAmt num" style="cursor:default">${yen(sum)}</span>
+    </div>`;
+    if (open) {
+      html += `<div class="catPickRow">${chargeItems.map(e => `<div style="display:flex;justify-content:space-between;font-size:12.5px;color:var(--ink2);padding:2px 0"><span>${e.day}日 ${esc(e.label)}</span><span class="num">${yen(e.amount)}</span></div>`).join("")}</div>`;
+    }
+  } else if (chargeItems.length === 1) {
+    html += expItemHtml(chargeItems[0]);
+  }
+  return html;
 }
 
 function incDetailEditor(m, who) {
