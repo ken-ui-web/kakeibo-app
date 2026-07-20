@@ -1079,6 +1079,32 @@ async function extractPdfText(file) {
   }
   return pages.join("\n\n");
 }
+function withTimeout(promise, ms, msg) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(msg || "処理がタイムアウトしました")), ms))
+  ]);
+}
+/* テキストが埋め込まれていない（画像的に描画された）PDF用に、各ページを画像化してAIに読み取らせる */
+async function renderPdfPagesToImages(file, maxPages) {
+  const pdfjsLib = await loadPdfJs();
+  const buf = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+  const n = Math.min(pdf.numPages, maxPages || 6);
+  const images = [];
+  for (let i = 1; i <= n; i++) {
+    const page = await withTimeout(pdf.getPage(i), 15000, "PDFページの読み込みがタイムアウトしました");
+    const viewport = page.getViewport({ scale: 2 });
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.ceil(viewport.width);
+    canvas.height = Math.ceil(viewport.height);
+    const ctx = canvas.getContext("2d");
+    await withTimeout(page.render({ canvasContext: ctx, viewport }).promise, 20000, "PDFページの描画がタイムアウトしました");
+    const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
+    images.push({ base64: dataUrl.split(",")[1], mimeType: "image/jpeg" });
+  }
+  return images;
+}
 
 function fileToBase64(file) {
   return new Promise((resolve, reject) => {
@@ -1088,19 +1114,12 @@ function fileToBase64(file) {
     r.readAsDataURL(file);
   });
 }
-async function callGeminiOCR(images) {
-  /* images: [{base64, mimeType}, ...] — 1枚でも複数枚（裏表など）でもOK */
+async function callGeminiJSON(images, prompt) {
+  /* images: [{base64, mimeType}, ...] を渡し、promptで指定したJSON形式のオブジェクトを受け取る共通処理 */
   const key = (DB.settings.geminiKey || "").trim();
   if (!key) { const e = new Error("Gemini APIキーが未設定です"); e.noKey = true; throw e; }
   let model = DB.settings.geminiModel || DEFAULT_GEMINI_MODEL;
   if (DEPRECATED_GEMINI_MODELS.includes(model)) { model = DEFAULT_GEMINI_MODEL; DB.settings.geminiModel = model; save(); }
-  const prompt = images.length > 1
-    ? `これらは同じ人の日本の給与明細に関する複数枚の写真です（裏表や、明細書＋振込通知票など、関連する複数の書類の場合があります）。すべての写真の内容を1つにまとめ、記載されている項目をすべて読み取って、次のJSON形式だけで出力してください。前置きや説明文、コードブロックの記号は不要です。
-{"items":[{"label":"項目名","amount":数値}],"gross":支給額計または総支給額(数値かnull),"deduction":控除合計(すべての控除・天引き項目の合計。複数の書類にまたがる場合は合算する。数値かnull),"net":最終的に実際に口座へ振り込まれた金額(数値かnull)}
-金額はカンマや円記号を除いた数値にしてください。同じ項目が複数の写真に重複して写っていても1回だけ数えてください。読み取れない項目は無理に含めないでください。"net"は、複数の書類にまたがって控除がある場合、最終的な実際の振込額（本人口座振込額など、一番最後に確定する金額）を優先してください。`
-    : `これは日本の給与明細の写真です。記載されている項目をすべて読み取り、次のJSON形式だけで出力してください。前置きや説明文、コードブロックの記号は不要です。
-{"items":[{"label":"項目名","amount":数値}],"gross":支給額計または総支給額(数値かnull),"deduction":控除合計(数値かnull),"net":差引支給額または振込額(数値かnull)}
-金額はカンマや円記号を除いた数値にしてください。読み取れない項目は無理に含めないでください。`;
   let res;
   try {
     res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`, {
@@ -1112,7 +1131,7 @@ async function callGeminiOCR(images) {
       })
     });
   } catch (err) {
-    const e = new Error("通信できませんでした。GitHub Pagesで公開したURLから開いているか確認してください。"); throw e;
+    throw new Error("通信できませんでした。GitHub Pagesで公開したURLから開いているか確認してください。");
   }
   if (!res.ok) {
     const body = await res.json().catch(() => null);
@@ -1127,6 +1146,24 @@ async function callGeminiOCR(images) {
   const text = data && data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts && data.candidates[0].content.parts[0] && data.candidates[0].content.parts[0].text;
   if (!text) throw new Error("読み取り結果が空でした");
   try { return JSON.parse(text); } catch (e) { throw new Error("読み取り結果を解析できませんでした"); }
+}
+async function callGeminiOCR(images) {
+  /* images: [{base64, mimeType}, ...] — 1枚でも複数枚（裏表など）でもOK */
+  const prompt = images.length > 1
+    ? `これらは同じ人の日本の給与明細に関する複数枚の写真です（裏表や、明細書＋振込通知票など、関連する複数の書類の場合があります）。すべての写真の内容を1つにまとめ、記載されている項目をすべて読み取って、次のJSON形式だけで出力してください。前置きや説明文、コードブロックの記号は不要です。
+{"items":[{"label":"項目名","amount":数値}],"gross":支給額計または総支給額(数値かnull),"deduction":控除合計(すべての控除・天引き項目の合計。複数の書類にまたがる場合は合算する。数値かnull),"net":最終的に実際に口座へ振り込まれた金額(数値かnull)}
+金額はカンマや円記号を除いた数値にしてください。同じ項目が複数の写真に重複して写っていても1回だけ数えてください。読み取れない項目は無理に含めないでください。"net"は、複数の書類にまたがって控除がある場合、最終的な実際の振込額（本人口座振込額など、一番最後に確定する金額）を優先してください。`
+    : `これは日本の給与明細の写真です。記載されている項目をすべて読み取り、次のJSON形式だけで出力してください。前置きや説明文、コードブロックの記号は不要です。
+{"items":[{"label":"項目名","amount":数値}],"gross":支給額計または総支給額(数値かnull),"deduction":控除合計(数値かnull),"net":差引支給額または振込額(数値かnull)}
+金額はカンマや円記号を除いた数値にしてください。読み取れない項目は無理に含めないでください。`;
+  return callGeminiJSON(images, prompt);
+}
+async function callGeminiCardOCR(images) {
+  /* images: 楽天カード等の利用明細PDFを画像化したページ（複数枚可） */
+  const prompt = `これは日本のクレジットカードのご利用代金明細書（複数ページの場合あり）です。「ご利用明細」の表に記載されている個々の取引行だけを読み取り、次のJSON形式だけで出力してください。前置きや説明文、コードブロックの記号は不要です。
+{"transactions":[{"date":"YYYY-MM-DD","store":"利用店名","amount":利用金額(数値)}]}
+表の列は「利用日、利用店名、利用者、支払方法、利用金額、手数料/利息、支払総額、当月請求額、翌月繰越残高」の順です。amountには必ず「利用金額」の列の数値を使い、手数料・支払総額・当月請求額・翌月繰越残高は含めないでください。金額はカンマや円記号を除いた数値にしてください。合計金額や請求金額の行、注意書き、支払予定表など個々の取引でない行は含めないでください。取引が1件も見つからない場合はtransactionsを空配列にしてください。`;
+  return callGeminiJSON(images, prompt);
 }
 
 /* ============================================================ 夫婦間リアルタイム同期（Firebase） ============================================================ */
@@ -1237,7 +1274,7 @@ function renderImport() {
   let body = "";
   if (t === "csv") body = `
     ${inArtifact ? '<div class="hint" style="background:var(--danger-soft);color:var(--minus)">⚠️ Claude内のプレビューではPDF読み取りは動作しません。GitHub Pagesで公開したURLから開いてください（CSVファイルやテキスト貼り付けはここでも使えます）。</div>' : ""}
-    <div class="hint"><b>楽天e-NAVI → ご利用明細 → CSVで保存</b> したファイル、または<b>楽天カードアプリでダウンロードしたPDF明細</b>を選ぶか、明細表をコピーして貼り付けてください。日付・店名・金額を自動で読み取り、カテゴリを自動判定します。</div>
+    <div class="hint"><b>楽天e-NAVI → ご利用明細 → CSVで保存</b> したファイル、または<b>楽天カードアプリでダウンロードしたPDF明細</b>を選ぶか、明細表をコピーして貼り付けてください。日付・店名・金額を自動で読み取り、カテゴリを自動判定します。PDFに文字情報がない（画像的に作られている）場合は、Gemini APIキーが設定されていれば自動でAI画像認識に切り替えます。</div>
     <div class="frow" style="margin-bottom:10px">
       <input type="file" id="csvFile" accept=".csv,.txt,.pdf" style="font-size:13px">
       <span id="csvFileStatus" class="note"></span>
@@ -1310,12 +1347,34 @@ function renderImport() {
       statusEl.textContent = "🔄 PDFを読み取り中...";
       try {
         const text = await extractPdfText(f);
-        $("#impText").value = text;
-        statusEl.textContent = text.trim() ? "✅ PDFからテキストを抽出しました" : "⚠️ テキストが抽出できませんでした（画像スキャンのPDFの可能性があります）";
-        doParse();
+        const hasDate = /(20\d{2})[\/\-年.]\d{1,2}[\/\-月.]\d{1,2}/.test(text);
+        if (hasDate) {
+          $("#impText").value = text;
+          statusEl.textContent = "✅ PDFからテキストを抽出しました";
+          doParse();
+        } else if (DB.settings.geminiKey) {
+          statusEl.textContent = "🔄 文字情報のないPDFのようです。AIで画像として読み取っています...（時間がかかる場合があります）";
+          const images = await renderPdfPagesToImages(f, 6);
+          const result = await callGeminiCardOCR(images);
+          const txs = (result && result.transactions) || [];
+          if (!txs.length) { statusEl.textContent = "⚠️ 取引情報を読み取れませんでした"; return; }
+          const preview = txs.map(t => `${t.date}\t${t.store}\t${t.amount}`).join("\n");
+          $("#impText").value = preview;
+          statusEl.textContent = `✅ AIが${txs.length}件の取引を読み取りました`;
+          state.impRows = txs.filter(t => t.date && t.amount).map(t => {
+            const d = parseDateStr(t.date);
+            return d ? { ym: d.ym, day: d.day, label: t.store || "利用", amount: Number(t.amount) } : null;
+          }).filter(Boolean).map(r => ({ ...r, id: uid(), cat: guessCat(r.label) || "other", checked: true, guessed: guessCat(r.label) || "other" }));
+          markDups();
+          renderPreview();
+        } else {
+          $("#impText").value = text;
+          statusEl.textContent = "⚠️ このPDFには文字情報がなく、テキストとして読み取れませんでした。設定画面でGemini APIキーを登録すると、画像として自動的に読み取れるようになります。";
+        }
       } catch (err) {
         statusEl.textContent = "";
-        toast("PDFの読み取りに失敗しました：" + ((err && err.message) || "GitHub Pagesで公開したURLから開いているか確認してください"));
+        if (err && err.noKey) toast("設定画面でGemini APIキーを登録してください");
+        else toast("PDFの読み取りに失敗しました：" + ((err && err.message) || "GitHub Pagesで公開したURLから開いているか確認してください"));
       }
       return;
     }
@@ -1523,7 +1582,8 @@ function parseCSVText(text) {
   let header = null, hIdx = -1;
   for (let i = 0; i < Math.min(lines.length, 5); i++) {
     const cols = parseCSVLine(lines[i]);
-    if (cols.some(c => /利用日|ご利用日/.test(c)) && cols.some(c => /金額|総額/.test(c))) { header = cols; hIdx = i; break; }
+    /* カンマ等で実際に複数列に分かれている行のみヘッダーとみなす（PDF抽出のスペース区切り見出し行の誤検出を防ぐ） */
+    if (cols.length > 1 && cols.some(c => /利用日|ご利用日/.test(c)) && cols.some(c => /金額|総額/.test(c))) { header = cols; hIdx = i; break; }
   }
   const rows = [];
   if (header) {
@@ -1539,7 +1599,19 @@ function parseCSVText(text) {
       rows.push({ ym: d.ym, day: d.day, label: (c[iName] || "").trim() || "カード利用", amount: amt });
     }
   } else {
-    // free-form lines: date ... amount
+    // 楽天カード「ご利用代金請求明細書」PDF形式：日付 店名 本人/家族 支払方法 利用金額 手数料 支払総額 当月請求額 翌月繰越残高
+    // （1行に金額が5つ並ぶため、店名末尾のゴミや住所欄の数字誤検出を避けるためこちらを優先的に試す）
+    const strictRe = /^(\d{4}\/\d{1,2}\/\d{1,2})\s+(.+?)\s+(?:本人|家族)\*?\s+\S+\s+([\d,]+)(?:\s+[\d,]+){2,4}\s*$/;
+    const strictRows = [];
+    for (const line of lines) {
+      const m = line.match(strictRe);
+      if (!m) continue;
+      const d = parseDateStr(m[1]);
+      const amt = Number(m[3].replace(/,/g, ""));
+      if (d && amt) strictRows.push({ ym: d.ym, day: d.day, label: m[2].trim(), amount: amt });
+    }
+    if (strictRows.length) return strictRows;
+    // free-form lines: date ... amount（それ以外の自由形式のフォールバック）
     for (const line of lines) {
       const d = parseDateStr(line);
       if (!d) continue;
