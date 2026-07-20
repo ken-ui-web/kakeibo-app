@@ -997,7 +997,7 @@ async function gmailApi(path, params) {
 async function fetchGmailAndParse(query, onProgress) {
   const list = await gmailApi("messages", { q: query, maxResults: 100 });
   const ids = (list.messages || []).map(m => m.id);
-  if (!ids.length) return [];
+  if (!ids.length) { state.gmailDebug = []; return []; }
   let done = 0;
   const bodies = [];
   const batchSize = 6;
@@ -1007,19 +1007,19 @@ async function fetchGmailAndParse(query, onProgress) {
     results.forEach(msg => { if (msg) bodies.push(extractBodies(msg.payload)); done++; });
     if (onProgress) onProgress(done, ids.length);
   }
-  /* 解析デバッグ用に先頭3通の抽出テキストを保持 */
-  state.gmailDebug = bodies.slice(0, 3).map(b => ({
-    plain: (b.plain || "").slice(0, 4000),
-    html: (b.html || "").slice(0, 4000)
-  }));
   /* 全メールのプレーンテキスト版とHTML版を両方解析して統合。
-     同じ取引（同じ日付・金額）の二重通知はひとつにまとめ、店名が取れている行を優先する */
+     同じ取引（同じ日付・金額）の二重通知はひとつにまとめ、店名が取れている行を優先する。
+     店名が読み取れなかった（＝フォールバック名になった）メールは、あとでデバッグ表示するために控える */
   const byKey = new Map();
+  const fallbackBodies = [];
   bodies.forEach(b => {
     const parsed = [
       ...(b.plain ? parseRakutenMail(b.plain) : []),
       ...(b.html ? parseRakutenMail(b.html) : [])
     ];
+    if (parsed.length && parsed.every(r => MAIL_FALLBACK_LABELS.includes(r.label))) {
+      fallbackBodies.push({ body: b, sample: parsed[0] });
+    }
     parsed.forEach(r => {
       const k = r.ym + "|" + r.day + "|" + r.amount;
       const list = byKey.get(k);
@@ -1033,6 +1033,13 @@ async function fetchGmailAndParse(query, onProgress) {
   const rows = [];
   byKey.forEach(list => rows.push(...list));
   rows.sort((a, b) => a.ym === b.ym ? a.day - b.day : cmpYM(a.ym, b.ym));
+  /* 解析デバッグ用：店名が読み取れなかったメールを優先して控える（最大5通、なければ先頭5通） */
+  const debugSource = fallbackBodies.length ? fallbackBodies : bodies.map(b => ({ body: b, sample: null }));
+  state.gmailDebug = debugSource.slice(0, 5).map(({ body: b, sample }) => ({
+    plain: (b.plain || "").slice(0, 4000),
+    html: (b.html || "").slice(0, 4000),
+    sample
+  }));
   return rows;
 }
 
@@ -1216,11 +1223,11 @@ function renderImport() {
       <span id="gmStatus" class="note"></span>
     </div>
     ${state.gmailDebug && state.gmailDebug.length ? `
-    <details style="margin:10px 0">
-      <summary style="cursor:pointer;font-size:12.5px;font-weight:700;color:var(--ink2)">🔍 メールの解析デバッグ（店名がうまく読み取れないときに開く）</summary>
-      <div class="note" style="margin:6px 0">アプリがメールから読み取った生のテキストです。店名の読み取りがおかしい場合は、<b>この内容をすべてコピーしてClaudeに貼り付けて</b>ください。実際の形式に合わせて修正できます。</div>
+    <details style="margin:10px 0" open>
+      <summary style="cursor:pointer;font-size:12.5px;font-weight:700;color:var(--ink2)">🔍 メールの解析デバッグ（${state.gmailDebug.some(b => b.sample) ? "店名が読み取れなかったメール" : "先頭のメール"}を表示中）</summary>
+      <div class="note" style="margin:6px 0">${state.gmailDebug.some(b => b.sample) ? "以下は「楽天ペイ利用」のままになったメールの生テキストです。" : "アプリがメールから読み取った生のテキストです。"}店名の読み取りがおかしい場合は、<b>この内容をすべてコピーしてClaudeに貼り付けて</b>ください。実際の形式に合わせて修正できます。</div>
       <textarea readonly style="min-height:180px;font-size:11px" onclick="this.select()">${esc(state.gmailDebug.map((b, i) =>
-        `===== メール${i + 1}【テキスト版】=====\n${b.plain || "(なし)"}\n\n===== メール${i + 1}【HTML版から抽出】=====\n${b.html || "(なし)"}`).join("\n\n"))}</textarea>
+        `===== メール${i + 1}${b.sample ? `（${b.sample.ym.replace("-", "/")}/${b.sample.day} ¥${b.sample.amount.toLocaleString("ja-JP")}）` : ""}【テキスト版】=====\n${b.plain || "(なし)"}\n\n===== メール${i + 1}【HTML版から抽出】=====\n${b.html || "(なし)"}`).join("\n\n"))}</textarea>
     </details>` : ""}
     <div style="border-top:1px solid var(--line);margin:14px 0"></div>
     <div class="hint">または、メール本文をコピーして貼り付けてください。<b>複数のメールをまとめて貼り付けてもOK</b>です（自動で分割します）。</div>
