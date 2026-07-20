@@ -187,12 +187,16 @@ textarea{width:100%;min-height:130px;resize:vertical;font-size:13px;line-height:
 .leg-row .am{font-weight:600}
 
 /* assets */
-.as-row{display:grid;grid-template-columns:1fr auto auto auto;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid var(--hairline)}
+.as-row{display:grid;grid-template-columns:auto 1fr auto auto auto;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid var(--hairline)}
 .as-row input.nm{font-size:14px;padding:7px 10px}
 .as-row input.am{width:130px;text-align:right;font-weight:700;padding:7px 10px}
 .typ{border:1px solid var(--line);border-radius:99px;background:var(--surface);font-size:11px;font-weight:700;padding:5px 10px;color:var(--ink2);white-space:nowrap}
 .typ.inv{background:var(--accent-soft);color:var(--accent-soft-ink);border-color:transparent}
 .as-sub{display:flex;justify-content:space-between;font-size:13px;color:var(--ink2);padding-top:8px}
+.reorder{display:flex;flex-direction:column;gap:1px}
+.reorder button{padding:1px 5px;font-size:10px;line-height:1.4}
+.reorder button:disabled{opacity:.2;cursor:default}
+.reorder button:disabled:hover{background:none}
 
 /* import */
 .subtabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px}
@@ -422,7 +426,7 @@ function ensureRecurring(ym, m) {
 }
 
 /* ---------- app state ---------- */
-const state = { view: "home", cur: todayYM(), impTab: "csv", impRows: [], impNotice: "", range: 12, rangeStart: "", psParsed: null, incOpen: {}, reconcile: null };
+const state = { view: "home", cur: todayYM(), impTab: "csv", impRows: [], impNotice: "", range: 12, rangeStart: "", psParsed: null, incOpen: {}, reconcile: null, expAddOpen: false };
 
 /* ---------- toast ---------- */
 let toastTimer;
@@ -553,8 +557,12 @@ function renderHome() {
     <div class="card">
       <h2>🏦 資産（月末残高） ${carried ? '<span class="sp badge">前月からコピーしました</span>' : ""}</h2>
       <div id="assetRows">
-        ${m.assets.map(a => `
+        ${m.assets.map((a, i) => `
         <div class="as-row" data-id="${a.id}">
+          <div class="reorder">
+            <button type="button" class="iconb moveUp" aria-label="上へ" ${i === 0 ? "disabled" : ""}>▲</button>
+            <button type="button" class="iconb moveDown" aria-label="下へ" ${i === m.assets.length - 1 ? "disabled" : ""}>▼</button>
+          </div>
           <input class="nm" type="text" value="${esc(a.name)}" placeholder="口座名">
           <button type="button" class="typ ${a.type === "invest" ? "inv" : ""}">${a.type === "invest" ? "投資" : "貯金"}</button>
           <div class="yen-input"><input class="am num" type="text" inputmode="numeric" value="${fmtIn(a.amount)}" placeholder="0"></div>
@@ -568,14 +576,19 @@ function renderHome() {
 
   <div class="card">
     <h2>🧾 支出 <span class="sp num" style="color:var(--minus)">${yen(exp)}</span></h2>
+    ${state.expAddOpen ? `
     <form id="expForm" class="exp-add">
       <div class="field"><label>日</label><input type="number" id="eDay" min="1" max="31" value="${cmpYM(ym, todayYM()) === 0 ? new Date().getDate() : 1}"></div>
       <div class="field"><label>内容</label><input type="text" id="eLabel" placeholder="例：スーパーで買い物"></div>
       <div class="field full"><label>金額（円）</label><input type="text" inputmode="numeric" id="eAmt" class="num" placeholder="例：1,280"></div>
       <div class="catchips" id="eCats">${catChips}</div>
       <label class="full" style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;color:var(--ink2);cursor:pointer"><input type="checkbox" id="eFixed">📌 毎月の固定費として登録（来月以降も自動で追加されます）</label>
-      <div class="full"><button class="btn" type="submit" style="width:100%">支出を追加</button></div>
-    </form>
+      <div class="full frow" style="gap:8px;flex-wrap:nowrap">
+        <button class="btn ghost" type="button" id="eCancel" style="flex:1">キャンセル</button>
+        <button class="btn" type="submit" style="flex:2">上記の内容を追加</button>
+      </div>
+    </form>` : `
+    <button class="btn" id="eOpenBtn" style="width:100%;margin-bottom:4px">＋ 支出を追加</button>`}
     ${donutHtml(catGroups, exp)}
     <div id="expList">
       ${catGroups.length ? catGroups.map(g2 => `
@@ -639,22 +652,30 @@ function renderHome() {
   });
 
   /* wire assets */
-  $$("#assetRows .as-row").forEach(row => {
+  $$("#assetRows .as-row").forEach((row, idx) => {
     const a = m.assets.find(x => x.id === row.dataset.id);
     row.querySelector(".nm").onchange = e => { a.name = e.target.value; save(); };
     row.querySelector(".am").onchange = e => { a.amount = numVal(e.target.value); save(); renderHome(); };
     row.querySelector(".typ").onclick = () => { a.type = a.type === "invest" ? "cash" : "invest"; save(); renderHome(); };
     row.querySelector(".del").onclick = () => { if (confirm(`「${a.name}」を削除しますか？`)) { m.assets = m.assets.filter(x => x.id !== a.id); save(); renderHome(); } };
+    const up = row.querySelector(".moveUp"), down = row.querySelector(".moveDown");
+    if (up) up.onclick = () => { if (idx > 0) { const t = m.assets[idx - 1]; m.assets[idx - 1] = m.assets[idx]; m.assets[idx] = t; save(); renderHome(); } };
+    if (down) down.onclick = () => { if (idx < m.assets.length - 1) { const t = m.assets[idx + 1]; m.assets[idx + 1] = m.assets[idx]; m.assets[idx] = t; save(); renderHome(); } };
   });
   $("#addAsset").onclick = () => { m.assets.push({ id: uid(), name: "", type: "cash", amount: 0 }); save(); renderHome(); };
 
   /* wire expense form */
+  if ($("#eOpenBtn")) $("#eOpenBtn").onclick = () => {
+    state.expAddOpen = true; renderHome();
+    setTimeout(() => { const el = $("#eLabel"); if (el) el.focus(); }, 0);
+  };
+  if ($("#eCancel")) $("#eCancel").onclick = () => { state.expAddOpen = false; renderHome(); };
   let selCat = null;
   $$("#eCats .chip").forEach(ch => ch.onclick = () => {
     $$("#eCats .chip").forEach(c => c.classList.remove("on"));
     ch.classList.add("on"); selCat = ch.dataset.cat;
   });
-  $("#expForm").onsubmit = e => {
+  if ($("#expForm")) $("#expForm").onsubmit = e => {
     e.preventDefault();
     const amt = numVal($("#eAmt").value);
     const label = $("#eLabel").value.trim();
@@ -671,6 +692,7 @@ function renderHome() {
       toast("支出を追加しました");
     }
     m.expenses.push(entry);
+    state.expAddOpen = false;
     save(); renderHome();
   };
   $$("#expList .editAmt").forEach(b => b.onclick = () => {
