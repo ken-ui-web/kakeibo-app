@@ -85,7 +85,9 @@ header{
 }
 
 /* ---------- month bar ---------- */
-.monthbar{max-width:1080px;margin:0 auto;padding:12px 16px 0;display:flex;align-items:center;gap:8px}
+#monthbarSlot{position:sticky;top:var(--header-h,56px);z-index:29;background:var(--page);border-bottom:1px solid transparent}
+#monthbarSlot:has(.monthbar){border-bottom-color:var(--line)}
+.monthbar{max-width:1080px;margin:0 auto;padding:12px 16px;display:flex;align-items:center;gap:8px}
 .monthbar .mv{font-size:20px;font-weight:700;letter-spacing:.02em;min-width:9em;text-align:center}
 .mbtn{
   width:38px;height:38px;border-radius:12px;border:1px solid var(--line);
@@ -116,7 +118,8 @@ main{max-width:1080px;margin:0 auto;padding:14px 16px 40px;display:grid;gap:14px
 .goalbar{height:10px;border-radius:99px;background:var(--surface2);overflow:hidden;margin:10px 0 6px}
 .goalbar i{display:block;height:100%;border-radius:99px;background:var(--accent);transition:width .5s ease}
 .goal-nums{display:flex;justify-content:space-between;font-size:12px;color:var(--ink2)}
-.goal-big{font-size:26px;font-weight:800}
+.goal-big{font-size:22px;font-weight:800;white-space:nowrap}
+.goalcompact{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
 .badge{display:inline-block;font-size:11px;font-weight:700;padding:2px 10px;border-radius:99px;background:var(--accent-soft);color:var(--accent-soft-ink)}
 .badge.warn{background:var(--danger-soft);color:var(--minus)}
 
@@ -269,7 +272,7 @@ details.pslip td{padding:2px 10px 2px 0;color:var(--ink2)}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 </style>
 
-<header>
+<header id="appHeader">
   <div class="hd-in">
     <div class="brand">わが家の家計簿<small>KAKEIBO</small></div>
     <nav class="top-tabs" id="topTabs"></nav>
@@ -427,6 +430,15 @@ function ensureRecurring(ym, m) {
   if (changed) save();
 }
 
+/* 楽天キャッシュ残高の口座は削除・データ入替後も自動で復元する（一度だけの移行フラグにはしない） */
+function ensureRakutenCashRows(ym, m) {
+  if (!m.assets.some(a => (a.name || "").includes("楽天キャッシュ"))) {
+    m.assets.push({ id: uid(), name: "楽天キャッシュ残高（" + (DB.settings.husbandName || "夫") + "）", type: "cash", amount: 0 });
+    m.assets.push({ id: uid(), name: "楽天キャッシュ残高（" + (DB.settings.wifeName || "妻") + "）", type: "cash", amount: 0 });
+    save();
+  }
+}
+
 /* ---------- app state ---------- */
 const state = { view: "home", cur: todayYM(), impTab: "csv", impRows: [], impNotice: "", range: 12, rangeStart: "", psParsed: null, incOpen: {}, reconcile: null, expAddOpen: false, catPickerFor: null };
 
@@ -476,16 +488,7 @@ function renderHome() {
     else m.assets = [];
   }
   ensureRecurring(ym, m);
-  // 楽天キャッシュ残高の口座を一度だけ自動追加（今月以降を開いたとき）
-  DB.migrations = DB.migrations || {};
-  if (!DB.migrations.rakutenCash && cmpYM(ym, todayYM()) >= 0) {
-    if (!m.assets.some(a => (a.name || "").includes("楽天キャッシュ"))) {
-      m.assets.push({ id: uid(), name: "楽天キャッシュ残高（" + (DB.settings.husbandName || "夫") + "）", type: "cash", amount: 0 });
-      m.assets.push({ id: uid(), name: "楽天キャッシュ残高（" + (DB.settings.wifeName || "妻") + "）", type: "cash", amount: 0 });
-    }
-    DB.migrations.rakutenCash = true;
-    save();
-  }
+  ensureRakutenCashRows(ym, m);
   const { inc, exp, bal } = totals(ym);
   const aTotal = assetTotal(m.assets);
   const cash = assetTotal(m.assets.filter(a => a.type !== "invest"));
@@ -525,13 +528,17 @@ function renderHome() {
     <div class="tile"><div class="tl">資産合計</div><div class="tv num">${yen(aTotal)}</div><div class="ts">貯金 ${yen(cash)} ＋ 投資 ${yen(inv)}</div></div>
   </div>
 
-  <div class="card">
-    <h2>🎯 目標まで <span class="sp">${g.amount ? "目標 " + yen(g.amount) + (g.deadline ? "（" + g.deadline.replaceAll("-", "/") + "まで）" : "") : ""}</span></h2>
+  <div class="card" style="padding-bottom:12px">
+    <h2 style="margin-bottom:6px">🎯 目標まで <span class="sp">${g.amount ? "目標 " + yen(g.amount) + (g.deadline ? "（" + g.deadline.replaceAll("-", "/") + "まで）" : "") : ""}</span></h2>
     ${g.amount ? `
-      <div class="goal-big num ${gap <= 0 ? "pos" : ""}">${gap <= 0 ? "達成 +" + yen(-gap) : "あと " + yen(gap)}</div>
-      <div class="goalbar"><i style="width:${pct}%"></i></div>
-      <div class="goal-nums num"><span>現在 ${yen(aTotal)}（${Math.round(pct)}%）</span><span>${yen(g.amount)}</span></div>
-      <div style="margin-top:8px">${paceHtml}</div>
+      <div class="goalcompact">
+        <div class="goal-big num ${gap <= 0 ? "pos" : ""}">${gap <= 0 ? "達成 +" + yen(-gap) : "あと " + yen(gap)}</div>
+        <div style="flex:1;min-width:160px">
+          <div class="goalbar" style="margin:3px 0 2px"><i style="width:${pct}%"></i></div>
+          <div class="goal-nums num"><span>現在 ${yen(aTotal)}（${Math.round(pct)}%）</span><span>${yen(g.amount)}</span></div>
+        </div>
+        ${paceHtml ? `<div>${paceHtml}</div>` : ""}
+      </div>
     ` : `<div class="empty">設定タブから目標金額と期限を設定してください</div>`}
   </div>
 
@@ -1158,8 +1165,10 @@ function renderImport() {
           <option value="30" selected>直近30日</option>
           <option value="90">直近90日</option>
           <option value="365">直近1年</option>
+          <option value="month">特定の月を指定</option>
         </select>
       </div>
+      <div class="field" id="gmMonthField" style="display:none"><label>対象の月</label><input type="month" id="gmMonth" value="${state.cur}"></div>
       <button class="btn" id="gmFetch">${gmailConnected() ? "📩 Gmailから取得する" : "🔌 Gmailに接続して取得"}</button>
       <span id="gmStatus" class="note"></span>
     </div>
@@ -1219,6 +1228,7 @@ function renderImport() {
   };
   $("#parseBtn").onclick = doParse;
 
+  if ($("#gmRange")) $("#gmRange").onchange = e => { $("#gmMonthField").style.display = e.target.value === "month" ? "flex" : "none"; };
   if ($("#gmFetch")) $("#gmFetch").onclick = async () => {
     const statusEl = $("#gmStatus");
     if (!gmailConnected()) {
@@ -1228,9 +1238,20 @@ function renderImport() {
       renderImport();
       $("#gmStatus").textContent = "";
     }
-    const days = Number($("#gmRange").value);
-    const sinceEpoch = Math.floor((Date.now() - days * 86400000) / 1000);
-    const query = (DB.settings.gmailQuery || DEFAULT_GMAIL_QUERY) + " after:" + sinceEpoch;
+    const rangeVal = $("#gmRange").value;
+    let query;
+    if (rangeVal === "month") {
+      const monthVal = $("#gmMonth").value;
+      if (!monthVal) { toast("対象の月を選択してください"); return; }
+      const [yy, mm] = monthVal.split("-").map(Number);
+      const afterEpoch = Math.floor(new Date(yy, mm - 1, 1).getTime() / 1000);
+      const beforeEpoch = Math.floor(new Date(yy, mm, 1).getTime() / 1000);
+      query = (DB.settings.gmailQuery || DEFAULT_GMAIL_QUERY) + " after:" + afterEpoch + " before:" + beforeEpoch;
+    } else {
+      const days = Number(rangeVal);
+      const sinceEpoch = Math.floor((Date.now() - days * 86400000) / 1000);
+      query = (DB.settings.gmailQuery || DEFAULT_GMAIL_QUERY) + " after:" + sinceEpoch;
+    }
     $("#gmStatus").textContent = "🔄 検索中...";
     try {
       const rows = await fetchGmailAndParse(query, (done, total) => { const el = $("#gmStatus"); if (el) el.textContent = `🔄 読み込み中 (${done}/${total})`; });
@@ -1896,4 +1917,12 @@ function render() {
 load();
 render();
 if (loadFirebaseConfig() && !inArtifact) fbInit();
+
+/* 月バーをヘッダー直下に固定するための実測（フォント・改行差を吸収） */
+function syncHeaderHeight() {
+  const h = document.getElementById("appHeader");
+  if (h) document.documentElement.style.setProperty("--header-h", h.offsetHeight + "px");
+}
+syncHeaderHeight();
+window.addEventListener("resize", syncHeaderHeight);
 </script>
