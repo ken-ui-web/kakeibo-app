@@ -931,7 +931,8 @@ async function callGeminiOCR(images) {
   /* images: [{base64, mimeType}, ...] — 1枚でも複数枚（裏表など）でもOK */
   const key = (DB.settings.geminiKey || "").trim();
   if (!key) { const e = new Error("Gemini APIキーが未設定です"); e.noKey = true; throw e; }
-  const model = DB.settings.geminiModel || DEFAULT_GEMINI_MODEL;
+  let model = DB.settings.geminiModel || DEFAULT_GEMINI_MODEL;
+  if (DEPRECATED_GEMINI_MODELS.includes(model)) { model = DEFAULT_GEMINI_MODEL; DB.settings.geminiModel = model; save(); }
   const prompt = images.length > 1
     ? `これらは同じ人の日本の給与明細に関する複数枚の写真です（裏表や、明細書＋振込通知票など、関連する複数の書類の場合があります）。すべての写真の内容を1つにまとめ、記載されている項目をすべて読み取って、次のJSON形式だけで出力してください。前置きや説明文、コードブロックの記号は不要です。
 {"items":[{"label":"項目名","amount":数値}],"gross":支給額計または総支給額(数値かnull),"deduction":控除合計(すべての控除・天引き項目の合計。複数の書類にまたがる場合は合算する。数値かnull),"net":最終的に実際に口座へ振り込まれた金額(数値かnull)}
@@ -1054,6 +1055,7 @@ function applyRemoteDB(data) {
   DB = rest;
   DB.updatedAt = updatedAt;
   try { localStorage.setItem(LS_KEY, JSON.stringify(DB)); } catch (e) {}
+  migrate(); // 同期元の端末が古いバージョンだった場合に備え、廃止モデル名などをここでも補正する
   render();
 }
 function pushToCloud(immediate) {
