@@ -1043,6 +1043,43 @@ async function fetchGmailAndParse(query, onProgress) {
   return rows;
 }
 
+/* ---------- PDF明細の読み取り（楽天カードアプリのPDFダウンロード対応） ---------- */
+const PDFJS_VER = "6.1.200";
+let pdfjsLibPromise = null;
+function loadPdfJs() {
+  if (pdfjsLibPromise) return pdfjsLibPromise;
+  pdfjsLibPromise = (async () => {
+    const base = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${PDFJS_VER}/build/`;
+    const lib = await import(/* @vite-ignore */ base + "pdf.min.mjs");
+    lib.GlobalWorkerOptions.workerSrc = base + "pdf.worker.min.mjs";
+    return lib;
+  })();
+  return pdfjsLibPromise;
+}
+async function extractPdfText(file) {
+  const pdfjsLib = await loadPdfJs();
+  const buf = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+  const pages = [];
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    /* Y座標でまとめて1行として再構成し、列がバラバラに連結されるのを防ぐ */
+    const lines = new Map();
+    content.items.forEach(item => {
+      const y = Math.round(item.transform[5]);
+      if (!lines.has(y)) lines.set(y, []);
+      lines.get(y).push(item);
+    });
+    const sortedYs = Array.from(lines.keys()).sort((a, b) => b - a);
+    const pageText = sortedYs.map(y =>
+      lines.get(y).sort((a, b) => a.transform[4] - b.transform[4]).map(it => it.str).join("")
+    ).join("\n");
+    pages.push(pageText);
+  }
+  return pages.join("\n\n");
+}
+
 function fileToBase64(file) {
   return new Promise((resolve, reject) => {
     const r = new FileReader();
@@ -1199,11 +1236,14 @@ function renderImport() {
   const t = state.impTab;
   let body = "";
   if (t === "csv") body = `
-    <div class="hint"><b>楽天e-NAVI → ご利用明細 → CSVで保存</b> したファイルを選ぶか、明細表をコピーして貼り付けてください。日付・店名・金額を自動で読み取り、カテゴリを自動判定します。</div>
+    ${inArtifact ? '<div class="hint" style="background:var(--danger-soft);color:var(--minus)">⚠️ Claude内のプレビューではPDF読み取りは動作しません。GitHub Pagesで公開したURLから開いてください（CSVファイルやテキスト貼り付けはここでも使えます）。</div>' : ""}
+    <div class="hint"><b>楽天e-NAVI → ご利用明細 → CSVで保存</b> したファイル、または<b>楽天カードアプリでダウンロードしたPDF明細</b>を選ぶか、明細表をコピーして貼り付けてください。日付・店名・金額を自動で読み取り、カテゴリを自動判定します。</div>
     <div class="frow" style="margin-bottom:10px">
-      <input type="file" id="csvFile" accept=".csv,.txt" style="font-size:13px">
+      <input type="file" id="csvFile" accept=".csv,.txt,.pdf" style="font-size:13px">
+      <span id="csvFileStatus" class="note"></span>
     </div>
     <textarea id="impText" placeholder="またはここにCSV・明細のテキストを貼り付け&#10;例：2026/07/01,楽天ペイ*セブン-イレブン,646"></textarea>
+    <div class="note" style="margin-top:6px">PDFの場合、読み取った内容がうまく明細として認識されないときは、上のテキストを確認・修正してから「読み取る」を押してください。うまくいかない場合は、上のテキストをコピーしてClaudeに貼り付けていただければ調整します。</div>
     <div style="margin-top:10px"><button class="btn" id="parseBtn">読み取る</button></div>`;
   if (t === "pay") body = `
     ${inArtifact ? '<div class="hint" style="background:var(--danger-soft);color:var(--minus)">⚠️ Claude内のプレビューではGmail連携は動作しません。GitHub Pagesで公開したURLから開いてください。</div>' : ""}
@@ -1265,6 +1305,21 @@ function renderImport() {
 
   if ($("#csvFile")) $("#csvFile").onchange = async e => {
     const f = e.target.files[0]; if (!f) return;
+    const statusEl = $("#csvFileStatus");
+    if (/\.pdf$/i.test(f.name) || f.type === "application/pdf") {
+      statusEl.textContent = "🔄 PDFを読み取り中...";
+      try {
+        const text = await extractPdfText(f);
+        $("#impText").value = text;
+        statusEl.textContent = text.trim() ? "✅ PDFからテキストを抽出しました" : "⚠️ テキストが抽出できませんでした（画像スキャンのPDFの可能性があります）";
+        doParse();
+      } catch (err) {
+        statusEl.textContent = "";
+        toast("PDFの読み取りに失敗しました：" + ((err && err.message) || "GitHub Pagesで公開したURLから開いているか確認してください"));
+      }
+      return;
+    }
+    statusEl.textContent = "";
     const buf = await f.arrayBuffer();
     let text = "";
     try {
