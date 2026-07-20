@@ -406,11 +406,14 @@ function latestAssets(uptoYM) {
   }
   return null;
 }
+/* 楽天キャッシュ「チャージ」は、後日その残高から支払った時点で別の支出として計上されるため、
+   合計・集計からは除外する（表示上は今まで通り一覧に残す） */
+function isChargeExpense(e) { return CHARGE_RE.test((e && e.label) || ""); }
 function totals(ym) {
   const m = DB.months[ym];
   if (!m) return { inc: 0, exp: 0, bal: 0 };
   const inc = (m.income.ken || 0) + (m.income.misuzu || 0) + (m.income.other || 0);
-  const exp = m.expenses.reduce((s, e) => s + (e.amount || 0), 0);
+  const exp = m.expenses.reduce((s, e) => s + (isChargeExpense(e) ? 0 : (e.amount || 0)), 0);
   return { inc, exp, bal: inc - exp };
 }
 function assetTotal(list) { return (list || []).reduce((s, a) => s + (a.amount || 0), 0); }
@@ -510,12 +513,13 @@ function renderHome() {
 
   const hName = esc(DB.settings.husbandName || "夫"), wName = esc(DB.settings.wifeName || "妻");
 
-  // expenses grouped by category
+  // expenses grouped by category（表示上はチャージも含めて一覧に出すが、金額の合計にはチャージ分を含めない）
   const byCat = {};
   m.expenses.forEach(e => { (byCat[e.cat] = byCat[e.cat] || []).push(e); });
   const catGroups = Object.entries(byCat)
-    .map(([cid, list]) => ({ cat: catById(cid), list, sum: list.reduce((s, e) => s + e.amount, 0) }))
+    .map(([cid, list]) => ({ cat: catById(cid), list, sum: list.reduce((s, e) => s + (isChargeExpense(e) ? 0 : e.amount), 0) }))
     .sort((a, b) => b.sum - a.sum);
+  const realExpCount = m.expenses.filter(e => !isChargeExpense(e)).length;
 
   const catChips = DB.settings.categories.filter(c => c.id !== "legacy").map(c =>
     `<button type="button" class="chip" data-cat="${c.id}"><span class="dot" style="background:${c.color}"></span>${esc(c.name)}</button>`).join("");
@@ -534,7 +538,7 @@ function renderHome() {
   $("#view").innerHTML = `
   <div class="tiles">
     <div class="tile"><div class="tl">総収入</div><div class="tv num pos">${yen(inc)}</div><div class="ts">${hName} ${yen(m.income.ken)} ／ ${wName} ${yen(m.income.misuzu)}</div></div>
-    <div class="tile"><div class="tl">総支出</div><div class="tv num" style="color:var(--minus)">${yen(exp)}</div><div class="ts">${m.expenses.length}件</div></div>
+    <div class="tile"><div class="tl">総支出</div><div class="tv num" style="color:var(--minus)">${yen(exp)}</div><div class="ts">${realExpCount}件</div></div>
     <div class="tile"><div class="tl">残金（収入−支出）</div><div class="tv num ${bal >= 0 ? "pos" : "neg"}">${yenS(bal)}</div><div class="ts">${ymLabel(ym)}</div></div>
     <div class="tile"><div class="tl">資産合計</div><div class="tv num">${yen(aTotal)}</div><div class="ts">貯金 ${yen(cash)} ＋ 投資 ${yen(inv)}</div></div>
   </div>
@@ -1736,9 +1740,9 @@ function renderAnalysis() {
     return { ym, v: m && m.assets && m.assets.length ? assetTotal(m.assets) : null };
   }).filter(p => p.v != null);
 
-  // category stack (top cats over window, excluding legacy)
+  // category stack (top cats over window, excluding legacy・楽天キャッシュチャージは集計対象外)
   const catSums = {};
-  yms.forEach(ym => (DB.months[ym]?.expenses || []).forEach(e => { if (e.cat !== "legacy") catSums[e.cat] = (catSums[e.cat] || 0) + e.amount; }));
+  yms.forEach(ym => (DB.months[ym]?.expenses || []).forEach(e => { if (e.cat !== "legacy" && !isChargeExpense(e)) catSums[e.cat] = (catSums[e.cat] || 0) + e.amount; }));
   const topCats = Object.entries(catSums).sort((a, b) => b[1] - a[1]).slice(0, 7).map(([id]) => id);
   const hasCatData = topCats.length > 0;
 
@@ -1862,7 +1866,7 @@ function stackChart(yms, topCats) {
   const data = yms.map(ym => {
     const per = {}; let other = 0, tot = 0;
     (DB.months[ym]?.expenses || []).forEach(e => {
-      if (e.cat === "legacy") return;
+      if (e.cat === "legacy" || isChargeExpense(e)) return;
       tot += e.amount;
       if (topCats.includes(e.cat)) per[e.cat] = (per[e.cat] || 0) + e.amount;
       else other += e.amount;
