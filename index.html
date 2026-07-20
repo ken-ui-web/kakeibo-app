@@ -582,7 +582,14 @@ function renderHome() {
       <div class="field"><label>内容</label><input type="text" id="eLabel" placeholder="例：スーパーで買い物"></div>
       <div class="field full"><label>金額（円）</label><input type="text" inputmode="numeric" id="eAmt" class="num" placeholder="例：1,280"></div>
       <div class="catchips" id="eCats">${catChips}</div>
-      <label class="full" style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;color:var(--ink2);cursor:pointer"><input type="checkbox" id="eFixed">📌 毎月の固定費として登録（来月以降も自動で追加されます）</label>
+      <label class="full" style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;color:var(--ink2);cursor:pointer"><input type="checkbox" id="eFixed">📌 固定費として登録する</label>
+      <div class="full" id="eFixedOpts" style="display:none;flex-direction:column;gap:6px;padding-left:24px;margin-top:-4px">
+        <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--ink2);cursor:pointer"><input type="checkbox" id="eFixedForward" checked>この月以降も自動で追加する（毎月繰り返す）</label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--ink2);cursor:pointer"><input type="checkbox" id="eFixedBackfill">過去の月にも追加する</label>
+        <div id="eFixedBackfillFrom" style="display:none;padding-left:22px">
+          <div class="field"><label>いつから追加する？</label><input type="month" id="eFixedFrom" value="${addMonths(ym, -1)}" max="${ym}"></div>
+        </div>
+      </div>
       <div class="full frow" style="gap:8px;flex-wrap:nowrap">
         <button class="btn ghost" type="button" id="eCancel" style="flex:1">キャンセル</button>
         <button class="btn" type="submit" style="flex:2">上記の内容を追加</button>
@@ -675,6 +682,8 @@ function renderHome() {
     $$("#eCats .chip").forEach(c => c.classList.remove("on"));
     ch.classList.add("on"); selCat = ch.dataset.cat;
   });
+  if ($("#eFixed")) $("#eFixed").onchange = e => { $("#eFixedOpts").style.display = e.target.checked ? "flex" : "none"; };
+  if ($("#eFixedBackfill")) $("#eFixedBackfill").onchange = e => { $("#eFixedBackfillFrom").style.display = e.target.checked ? "block" : "none"; };
   if ($("#expForm")) $("#expForm").onsubmit = e => {
     e.preventDefault();
     const amt = numVal($("#eAmt").value);
@@ -684,10 +693,27 @@ function renderHome() {
     const cat = selCat || guessCat(label) || "other";
     const entry = { id: uid(), day, label: label || catById(cat).name, amount: amt, cat };
     if ($("#eFixed").checked) {
-      const t = { id: uid(), label: entry.label, amount: amt, cat, day, since: ym };
-      recTemplates().push(t);
-      entry.recurringId = t.id;
-      toast("固定費として登録しました（来月以降も自動で追加されます）");
+      const forward = $("#eFixedForward").checked;
+      const backfill = $("#eFixedBackfill").checked;
+      const fromYm = backfill ? ($("#eFixedFrom").value || ym) : ym;
+      if (backfill && cmpYM(fromYm, ym) > 0) { toast("開始月はこの月より前（または同じ月）にしてください"); return; }
+      let recId = null;
+      if (forward) {
+        const t = { id: uid(), label: entry.label, amount: amt, cat, day, since: backfill ? fromYm : ym };
+        recTemplates().push(t);
+        recId = t.id;
+        entry.recurringId = recId;
+      }
+      if (backfill) {
+        let p = fromYm;
+        while (cmpYM(p, ym) < 0) {
+          const pm = monthOf(p, true);
+          const dup = recId ? pm.expenses.some(x => x.recurringId === recId) : false;
+          if (!dup) pm.expenses.push({ id: uid(), day, label: entry.label, amount: amt, cat, ...(recId ? { recurringId: recId } : {}) });
+          p = addMonths(p, 1);
+        }
+      }
+      toast((forward ? "固定費として登録しました（来月以降も自動で追加されます）" : "支出を追加しました") + (backfill ? "。過去の月にもまとめて追加しました" : ""));
     } else {
       toast("支出を追加しました");
     }
