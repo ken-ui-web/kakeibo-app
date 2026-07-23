@@ -192,9 +192,15 @@ textarea{width:100%;min-height:130px;resize:vertical;font-size:13px;line-height:
 .leg-row .am{font-weight:600}
 
 /* assets */
-.as-row{display:grid;grid-template-columns:auto 1fr auto auto auto;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid var(--hairline)}
+.as-row{display:grid;grid-template-columns:auto 1fr auto auto auto;gap:8px;align-items:center;padding:6px 0 0;border-bottom:0}
 .as-row input.nm{font-size:14px;padding:7px 10px}
 .as-row input.am{width:130px;text-align:right;font-weight:700;padding:7px 10px}
+.invEval{display:flex;align-items:center;gap:10px;padding:4px 0 8px 40px;flex-wrap:wrap;border-bottom:1px solid var(--hairline)}
+.invEval .field{gap:2px}
+.invEval .field label{font-size:10px}
+.invEval input.ev{width:110px;text-align:right;padding:5px 8px;font-size:13px}
+.invEval .invGain{font-size:12.5px;font-weight:700}
+.asset-noeval{border-bottom:1px solid var(--hairline);padding-bottom:6px}
 .typ{border:1px solid var(--line);border-radius:99px;background:var(--surface);font-size:11px;font-weight:700;padding:5px 10px;color:var(--ink2);white-space:nowrap}
 .typ.inv{background:var(--accent-soft);color:var(--accent-soft-ink);border-color:transparent}
 .as-sub{display:flex;justify-content:space-between;font-size:13px;color:var(--ink2);padding-top:8px}
@@ -448,7 +454,7 @@ function ensureRakutenCashRows(ym, m) {
 }
 
 /* ---------- app state ---------- */
-const state = { view: "home", cur: todayYM(), impTab: "csv", impRows: [], impNotice: "", range: 12, rangeStart: "", psParsed: null, incOpen: {}, reconcile: null, expAddOpen: false, catPickerFor: null, chargeOpen: null };
+const state = { view: "home", cur: todayYM(), impTab: "csv", impRows: [], impNotice: "", range: 12, rangeStart: "", psParsed: null, incOpen: {}, reconcile: null, expAddOpen: false, catPickerFor: null, consolidateOpen: {} };
 
 /* ---------- toast ---------- */
 let toastTimer;
@@ -588,7 +594,7 @@ function renderHome() {
       <h2>🏦 資産（月末残高） ${carried ? '<span class="sp badge">前月からコピーしました</span>' : ""}</h2>
       <div id="assetRows">
         ${m.assets.map((a, i) => `
-        <div class="as-row" data-id="${a.id}">
+        <div class="as-row ${a.type === "invest" ? "" : "asset-noeval"}" data-id="${a.id}">
           <div class="reorder">
             <button type="button" class="iconb moveUp" aria-label="上へ" ${i === 0 ? "disabled" : ""}>▲</button>
             <button type="button" class="iconb moveDown" aria-label="下へ" ${i === m.assets.length - 1 ? "disabled" : ""}>▼</button>
@@ -597,7 +603,17 @@ function renderHome() {
           <button type="button" class="typ ${a.type === "invest" ? "inv" : ""}">${a.type === "invest" ? "投資" : "貯金"}</button>
           <div class="yen-input"><input class="am num" type="text" inputmode="numeric" value="${fmtIn(a.amount)}" placeholder="0"></div>
           <button type="button" class="iconb del" aria-label="削除">✕</button>
-        </div>`).join("")}
+        </div>
+        ${a.type === "invest" ? `
+        <div class="invEval" data-id="${a.id}">
+          <div class="field"><label>評価額（時価）</label><div class="yen-input"><input class="ev num" type="text" inputmode="numeric" value="${fmtIn(a.marketValue)}" placeholder="未入力"></div></div>
+          ${(numVal(a.marketValue) && numVal(a.amount)) ? (() => {
+            const gain = numVal(a.marketValue) - numVal(a.amount);
+            const pct = gain / numVal(a.amount) * 100;
+            const pctStr = (gain >= 0 ? "+" : "") + pct.toFixed(1) + "%";
+            return `<span class="invGain ${gain >= 0 ? "pos" : "neg"} num">${pctStr}（${yenS(gain)}）</span>`;
+          })() : '<span class="note">評価額を入れると増減率を表示します</span>'}
+        </div>` : ""}`).join("")}
       </div>
       ${rakutenCashHint ? `<div class="note" style="margin-top:8px;line-height:1.7">💡 楽天キャッシュ残高の目安：先月合計 ${yen(rakutenCashHint.prevTotal)} − 今月の利用 ${yen(rakutenCashHint.usage)}${rakutenCashHint.charge ? " ＋ チャージ " + yen(rakutenCashHint.charge) : ""} ＝ <b class="num">${yen(rakutenCashHint.estimate)}</b>（参考値。実際の金額は楽天アプリでご確認のうえ、上の欄にご自身で入力してください）</div>` : ""}
       <div style="margin-top:8px"><button class="btn mini ghost" id="addAsset">＋ 口座を追加</button></div>
@@ -699,6 +715,13 @@ function renderHome() {
     if (up) up.onclick = () => { if (idx > 0) { const t = m.assets[idx - 1]; m.assets[idx - 1] = m.assets[idx]; m.assets[idx] = t; save(); renderHome(); } };
     if (down) down.onclick = () => { if (idx < m.assets.length - 1) { const t = m.assets[idx + 1]; m.assets[idx + 1] = m.assets[idx]; m.assets[idx] = t; save(); renderHome(); } };
   });
+  $$("#assetRows .invEval .ev").forEach(inp => {
+    inp.onchange = e => {
+      const id = inp.closest(".invEval").dataset.id;
+      const a = m.assets.find(x => x.id === id);
+      if (a) { a.marketValue = numVal(e.target.value); save(); renderHome(); }
+    };
+  });
   $("#addAsset").onclick = () => { m.assets.push({ id: uid(), name: "", type: "cash", amount: 0 }); save(); renderHome(); };
 
   /* wire expense form */
@@ -765,9 +788,9 @@ function renderHome() {
     state.catPickerFor = state.catPickerFor === id ? null : id;
     renderHome();
   });
-  $$("#expList .chargeToggle").forEach(b => b.onclick = () => {
-    const cat = b.dataset.cat;
-    state.chargeOpen = state.chargeOpen === cat ? null : cat;
+  $$("#expList .consolidateToggle").forEach(b => b.onclick = () => {
+    const key = b.dataset.key;
+    state.consolidateOpen[key] = !state.consolidateOpen[key];
     renderHome();
   });
   $$("#expList .catPick").forEach(b => b.onclick = () => {
@@ -818,8 +841,13 @@ function renderHome() {
   });
 }
 
-/* ---------- 楽天キャッシュチャージ項目の集約表示 ---------- */
+/* ---------- 似た項目（楽天キャッシュチャージ・コンビニ等）の集約表示 ---------- */
 const CHARGE_RE = /チャージ/;
+const CONBINI_RE = /セブン[－\-]?イレブン|ファミリーマート|ファミマ|ローソン/;
+const CONSOLIDATE_RULES = [
+  { key: "charge", icon: "🔋", label: "楽天キャッシュチャージ", re: CHARGE_RE },
+  { key: "conbini", icon: "🏪", label: "コンビニ", re: CONBINI_RE }
+];
 function expItemHtml(e) {
   return `<div class="exp-item" data-id="${e.id}">
       <span class="d num">${e.day}日</span>
@@ -830,25 +858,25 @@ function expItemHtml(e) {
     ${state.catPickerFor === e.id ? `<div class="catchips catPickRow">${DB.settings.categories.filter(c => c.id !== "legacy").map(c => `<button type="button" class="chip catPick ${c.id === e.cat ? "on" : ""}" data-id="${e.id}" data-cat="${c.id}"><span class="dot" style="background:${c.color}"></span>${esc(c.name)}</button>`).join("")}</div>` : ""}`;
 }
 function expGroupItemsHtml(g2) {
-  const sorted = g2.list.slice().sort((a, b) => a.day - b.day);
-  const chargeItems = sorted.filter(e => CHARGE_RE.test(e.label || ""));
-  const normalItems = sorted.filter(e => !CHARGE_RE.test(e.label || ""));
-  let html = normalItems.map(expItemHtml).join("");
-  if (chargeItems.length > 1) {
-    const sum = chargeItems.reduce((s, e) => s + amtOf(e), 0);
-    const open = state.chargeOpen === g2.cat.id;
-    html += `<div class="exp-item" data-id="charge-${g2.cat.id}">
+  let remaining = g2.list.slice().sort((a, b) => a.day - b.day);
+  let extraHtml = "";
+  CONSOLIDATE_RULES.forEach(rule => {
+    const matched = remaining.filter(e => rule.re.test(e.label || ""));
+    if (matched.length <= 1) return; // 1件以下ならまとめず通常表示のまま
+    remaining = remaining.filter(e => !rule.re.test(e.label || ""));
+    const sum = matched.reduce((s, e) => s + amtOf(e), 0);
+    const openKey = g2.cat.id + ":" + rule.key;
+    const open = !!state.consolidateOpen[openKey];
+    extraHtml += `<div class="exp-item" data-id="cons-${esc(openKey)}">
       <span class="d num">・</span>
-      <button type="button" class="l chargeToggle" data-cat="${g2.cat.id}" title="タップで内訳を表示">🔋 楽天キャッシュチャージ（${chargeItems.length}件） <span class="caret">${open ? "▾" : "▸"}</span></button>
+      <button type="button" class="l consolidateToggle" data-key="${esc(openKey)}" title="タップで内訳を表示">${rule.icon} ${esc(rule.label)}（${matched.length}件） <span class="caret">${open ? "▾" : "▸"}</span></button>
       <span class="editAmt num" style="cursor:default">${yen(sum)}</span>
     </div>`;
     if (open) {
-      html += `<div class="catPickRow">${chargeItems.map(e => `<div style="display:flex;justify-content:space-between;font-size:12.5px;color:var(--ink2);padding:2px 0"><span>${e.day}日 ${esc(e.label)}</span><span class="num">${yen(e.amount)}</span></div>`).join("")}</div>`;
+      extraHtml += `<div class="catPickRow">${matched.map(e => `<div style="display:flex;justify-content:space-between;font-size:12.5px;color:var(--ink2);padding:2px 0"><span>${e.day}日 ${esc(e.label)}</span><span class="num">${yen(e.amount)}</span></div>`).join("")}</div>`;
     }
-  } else if (chargeItems.length === 1) {
-    html += expItemHtml(chargeItems[0]);
-  }
-  return html;
+  });
+  return remaining.map(expItemHtml).join("") + extraHtml;
 }
 
 function incDetailEditor(m, who) {
